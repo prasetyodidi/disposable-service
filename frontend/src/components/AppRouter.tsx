@@ -8,58 +8,95 @@ interface AppRouterProps {
   page: 'dashboard' | 'pandoc' | 'setup' | 'login';
 }
 
+// Peta page prop → pathname yang diharapkan
+const PAGE_PATH: Record<AppRouterProps['page'], string> = {
+  dashboard: '/',
+  pandoc: '/pandoc',
+  setup: '/setup',
+  login: '/login',
+};
+
 export const AppRouter: React.FC<AppRouterProps> = ({ page }) => {
   const [checking, setChecking] = useState(true);
-  // Guard: pastikan redirect hanya terjadi sekali per mount
-  const redirecting = useRef(false);
+  // Ref guard: abort controller mencegah double-invocation React StrictMode
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    // Reset guard tiap kali page berubah
-    redirecting.current = false;
+    // Batalkan fetch sebelumnya (penting untuk React StrictMode & re-render cepat)
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    setChecking(true);
 
     const checkAuth = async () => {
       try {
-        const res = await fetch('/api/auth/status');
-        if (!res.ok) return;
+        const res = await fetch('/api/auth/status', { signal: controller.signal });
+
+        if (!res.ok) {
+          console.warn(`[AppRouter] /api/auth/status → HTTP ${res.status}. Rendering page as-is.`);
+          return;
+        }
 
         const data: { is_claimed: boolean; is_authenticated: boolean } = await res.json();
+        console.log('[AppRouter] status:', data, '| prop page:', page, '| pathname:', window.location.pathname);
 
-        // Sudah terjadi redirect sebelumnya — abaikan
-        if (redirecting.current) return;
+        if (controller.signal.aborted) return;
 
-        // Kasus 1: instance belum di-claim → wajib ke /setup
+        // Gunakan pathname aktual sebagai sumber kebenaran (bukan hanya prop)
+        const currentPath = window.location.pathname;
+
+        // Kasus 1: belum di-claim → harus ke /setup
         if (!data.is_claimed) {
-          if (page !== 'setup') {
-            redirecting.current = true;
+          if (currentPath !== '/setup') {
+            console.log('[AppRouter] → redirect /setup');
             window.location.replace('/setup');
+          } else {
+            console.log('[AppRouter] → sudah di /setup, render SetupCard');
           }
           return;
         }
 
-        // Kasus 2: instance sudah di-claim, tapi belum login → wajib ke /login
+        // Kasus 2: sudah di-claim, belum login → harus ke /login
         if (!data.is_authenticated) {
-          if (page !== 'login') {
-            redirecting.current = true;
+          if (currentPath !== '/login') {
+            console.log('[AppRouter] → redirect /login');
             window.location.replace('/login');
+          } else {
+            console.log('[AppRouter] → sudah di /login, render LoginCard');
           }
           return;
         }
 
-        // Kasus 3: sudah login, tapi masih di halaman auth → ke dashboard
-        if (page === 'login' || page === 'setup') {
-          redirecting.current = true;
+        // Kasus 3: sudah login, masih di halaman auth → ke dashboard
+        if (currentPath === '/login' || currentPath === '/setup') {
+          console.log('[AppRouter] → authenticated, redirect /');
           window.location.replace('/');
+          return;
         }
-      } catch {
-        // network or server offline — biarkan render halaman apa adanya
+
+        // Semua kondisi terpenuhi, render halaman
+        console.log('[AppRouter] → auth OK, render page:', page);
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          console.log('[AppRouter] fetch aborted (StrictMode cleanup or re-render)');
+          return; // Jangan panggil setChecking — effect baru akan mengurus ini
+        }
+        console.error('[AppRouter] fetch error:', err);
       } finally {
-        if (!redirecting.current) {
+        // Hanya set checking=false jika fetch ini tidak di-abort
+        if (!controller.signal.aborted) {
           setChecking(false);
         }
       }
     };
 
     checkAuth();
+
+    // Cleanup: abort fetch jika komponen unmount atau page berubah
+    return () => {
+      controller.abort();
+    };
   }, [page]);
 
   if (checking) {
@@ -87,3 +124,4 @@ export const AppRouter: React.FC<AppRouterProps> = ({ page }) => {
       return <DashboardView />;
   }
 };
+

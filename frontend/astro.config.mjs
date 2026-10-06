@@ -7,6 +7,15 @@ export default defineConfig({
   integrations: [react()],
   vite: {
     plugins: [tailwindcss()],
+    server: {
+      proxy: {
+        // Teruskan semua request /api ke backend Rust saat development
+        '/api': {
+          target: 'http://localhost:8080',
+          changeOrigin: true,
+        },
+      },
+    },
   },
   output: 'static',
   build: {
@@ -17,3 +26,4 @@ export default defineConfig({
     host: true,
   },
 });
+
