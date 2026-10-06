@@ -46,7 +46,7 @@ pub fn deploy_existing(opts: &DeployOptions) -> Result<()> {
 
     // Check Docker & Docker Compose
     let spinner = create_spinner("Verifying Docker and Docker Compose runtime...");
-    let (code, stdout, stderr) = ssh.execute("docker compose version || docker-compose --version")?;
+    let (code, stdout, stderr) = ssh.execute("docker compose version")?;
     if code != 0 {
         spinner.abandon();
         eprintln!(
@@ -80,10 +80,8 @@ pub fn deploy_existing(opts: &DeployOptions) -> Result<()> {
 
     // Pull container image
     let spinner = create_spinner("Pulling pre-built container image (docker compose pull)...");
-    let (pull_code, _, pull_err) = ssh.execute(&format!(
-        "cd {} && docker compose pull || docker-compose pull",
-        opts.remote_dir
-    ))?;
+    let (pull_code, _, pull_err) =
+        ssh.execute(&format!("cd {} && docker compose pull", opts.remote_dir))?;
     if pull_code != 0 {
         spinner.abandon();
         eprintln!(
@@ -97,10 +95,8 @@ pub fn deploy_existing(opts: &DeployOptions) -> Result<()> {
 
     // Start service
     let spinner = create_spinner("Starting container services (docker compose up -d)...");
-    let (up_code, _up_out, up_err) = ssh.execute(&format!(
-        "cd {} && docker compose up -d || docker-compose up -d",
-        opts.remote_dir
-    ))?;
+    let (up_code, _up_out, up_err) =
+        ssh.execute(&format!("cd {} && docker compose up -d", opts.remote_dir))?;
     if up_code != 0 {
         spinner.abandon();
         bail!("Failed to start docker compose: {}", up_err);
@@ -108,23 +104,30 @@ pub fn deploy_existing(opts: &DeployOptions) -> Result<()> {
     spinner.finish_with_message("Containers active and listening.");
 
     // Print final banner
-    println!("\n{}", style("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━").dim());
+    println!(
+        "\n{}",
+        style("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━").dim()
+    );
     println!(
         "{} {}",
         ROCKET,
-        style("Disposable Service Workspace is LIVE!").bold().green()
+        style("Disposable Service Workspace is LIVE!")
+            .bold()
+            .green()
     );
-    println!("{}", style("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━").dim());
+    println!(
+        "{}",
+        style("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━").dim()
+    );
     println!(
         "\n  Access URL:  {}",
-        style(format!("http://{}:80", opts.host)).bold().underlined().cyan()
+        style(format!("http://{}:80", opts.host))
+            .bold()
+            .underlined()
+            .cyan()
     );
-    println!(
-        "  First Step:  Open the URL in your browser to claim and set your Single Password."
-    );
-    println!(
-        "  Retention:   Strict Zero-Footprint ephemeral storage.\n"
-    );
+    println!("  First Step:  Open the URL in your browser to claim and set your Single Password.");
+    println!("  Retention:   Strict Zero-Footprint ephemeral storage.\n");
 
     Ok(())
 }
@@ -154,7 +157,7 @@ pub fn teardown_existing(opts: &DeployOptions) -> Result<()> {
 
     let spinner = create_spinner("Stopping and removing containers (docker compose down -v)...");
     let _ = ssh.execute(&format!(
-        "cd {} && (docker compose down -v || docker-compose down -v)",
+        "cd {} && (docker compose down -v)",
         opts.remote_dir
     ));
     spinner.finish_with_message("Containers stopped and volumes wiped.");
@@ -166,7 +169,9 @@ pub fn teardown_existing(opts: &DeployOptions) -> Result<()> {
     println!(
         "\n{} {}",
         TRASH,
-        style("Disposable Workspace successfully torn down. No residual traces remain.").bold().green()
+        style("Disposable Workspace successfully torn down. No residual traces remain.")
+            .bold()
+            .green()
     );
 
     Ok(())
