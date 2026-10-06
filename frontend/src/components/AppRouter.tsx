@@ -1,44 +1,71 @@
 import React, { useEffect, useState } from 'react';
-import { DashboardView } from './DashboardView';
-import { PandocConverter } from './PandocConverter';
-import { SetupCard } from './SetupCard';
-import { LoginCard } from './LoginCard';
 
-interface AppRouterProps {
-  page: 'dashboard' | 'pandoc' | 'setup' | 'login';
-}
+type AuthStatus = {
+  is_claimed: boolean;
+  is_authenticated: boolean;
+};
 
 export const AppRouter: React.FC<AppRouterProps> = ({ page }) => {
   const [checking, setChecking] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    const controller = new AbortController();
+    let redirecting = false;
+
     const checkAuth = async () => {
+      setChecking(true);
+      setError(null);
+
       try {
-        const res = await fetch('/api/auth/status');
-        if (res.ok) {
-          const data = await res.json();
-          if (!data.is_claimed && page !== 'setup') {
-            window.location.href = '/setup';
-            return;
-          }
-          if (data.is_claimed && !data.is_authenticated && page !== 'login') {
-            window.location.href = '/login';
-            return;
-          }
-          if (data.is_authenticated && (page === 'login' || page === 'setup')) {
-            window.location.href = '/';
-            return;
-          }
+        const res = await fetch('/api/auth/status', {
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+
+        if (!res.ok) {
+          throw new Error(`Auth status failed: ${res.status}`);
         }
-      } catch {
-        // network or server offline
+
+        const data = (await res.json()) as Partial<AuthStatus>;
+
+        if (
+          typeof data.is_claimed !== 'boolean' ||
+          typeof data.is_authenticated !== 'boolean'
+        ) {
+          throw new Error('Invalid auth status response');
+        }
+
+        const redirect = (path: string) => {
+          redirecting = true;
+          window.location.replace(path);
+        };
+
+        if (!data.is_claimed) {
+          if (page !== 'setup') redirect('/setup');
+        } else if (!data.is_authenticated) {
+          if (page !== 'login') redirect('/login');
+        } else if (page === 'login' || page === 'setup') {
+          redirect('/');
+        }
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        setError('Gagal memverifikasi status autentikasi.');
       } finally {
-        setChecking(false);
+        if (!redirecting && !controller.signal.aborted) {
+          setChecking(false);
+        }
       }
     };
 
     checkAuth();
+
+    return () => controller.abort();
   }, [page]);
+
+  if (error) {
+    return <div>{error}</div>; // ganti dengan UI error
+  }
 
   if (checking) {
     return (
