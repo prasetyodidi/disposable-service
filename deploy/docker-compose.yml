@@ -1,6 +1,6 @@
 services:
   disposable-workspace:
-    image: ${DISPOSABLE_IMAGE:-ghcr.io/disposable-workspace/core-service:latest}
+    image: ${DISPOSABLE_IMAGE:-ghcr.io/prasetyodidi/core-service:latest}
     container_name: disposable-workspace
     restart: unless-stopped
     ports:
@@ -14,5 +14,5 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
+          cpus: "2.0"
           memory: 2048M
