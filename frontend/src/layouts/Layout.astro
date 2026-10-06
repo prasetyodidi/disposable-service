@@ -1,0 +1,28 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = 'Disposable Service Workspace',
+  description = 'On-demand zero-footprint ephemeral workspace for secure pandoc PDF conversion and sensitive document processing.'
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#ffffff" />
+  </head>
+  <body class="min-h-screen bg-surface-soft text-ink font-sans">
+    <slot />
+  </body>
+</html>

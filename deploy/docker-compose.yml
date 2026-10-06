@@ -1,0 +1,18 @@
+services:
+  disposable-workspace:
+    image: ${DISPOSABLE_IMAGE:-ghcr.io/disposable-workspace/core-service:latest}
+    container_name: disposable-workspace
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      - PORT=80
+      - HOST=0.0.0.0
+      - STATIC_DIR=/app/frontend/dist
+      - PANDOC_BIN=pandoc
+      - PANDOC_PDF_ENGINE=pdflatex
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2048M

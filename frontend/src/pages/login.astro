@@ -1,0 +1,8 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { AppRouter } from '../components/AppRouter';
+---
+
+<Layout title="Login - Disposable Workspace">
+  <AppRouter client:only="react" page="login" />
+</Layout>
