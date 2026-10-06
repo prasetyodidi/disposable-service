@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { DashboardView } from './DashboardView';
 import { PandocConverter } from './PandocConverter';
 import { SetupCard } from './SetupCard';
@@ -10,30 +10,52 @@ interface AppRouterProps {
 
 export const AppRouter: React.FC<AppRouterProps> = ({ page }) => {
   const [checking, setChecking] = useState(true);
+  // Guard: pastikan redirect hanya terjadi sekali per mount
+  const redirecting = useRef(false);
 
   useEffect(() => {
+    // Reset guard tiap kali page berubah
+    redirecting.current = false;
+
     const checkAuth = async () => {
       try {
         const res = await fetch('/api/auth/status');
-        if (res.ok) {
-          const data = await res.json();
-          if (!data.is_claimed && page !== 'setup') {
-            window.location.href = '/setup';
-            return;
+        if (!res.ok) return;
+
+        const data: { is_claimed: boolean; is_authenticated: boolean } = await res.json();
+
+        // Sudah terjadi redirect sebelumnya — abaikan
+        if (redirecting.current) return;
+
+        // Kasus 1: instance belum di-claim → wajib ke /setup
+        if (!data.is_claimed) {
+          if (page !== 'setup') {
+            redirecting.current = true;
+            window.location.replace('/setup');
           }
-          if (data.is_claimed && !data.is_authenticated && page !== 'login') {
-            window.location.href = '/login';
-            return;
+          return;
+        }
+
+        // Kasus 2: instance sudah di-claim, tapi belum login → wajib ke /login
+        if (!data.is_authenticated) {
+          if (page !== 'login') {
+            redirecting.current = true;
+            window.location.replace('/login');
           }
-          if (data.is_authenticated && (page === 'login' || page === 'setup')) {
-            window.location.href = '/';
-            return;
-          }
+          return;
+        }
+
+        // Kasus 3: sudah login, tapi masih di halaman auth → ke dashboard
+        if (page === 'login' || page === 'setup') {
+          redirecting.current = true;
+          window.location.replace('/');
         }
       } catch {
-        // network or server offline
+        // network or server offline — biarkan render halaman apa adanya
       } finally {
-        setChecking(false);
+        if (!redirecting.current) {
+          setChecking(false);
+        }
       }
     };
 
