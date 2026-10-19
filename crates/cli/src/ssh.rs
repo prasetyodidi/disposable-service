@@ -24,8 +24,8 @@ impl SshClient {
         let addr = format!("{}:{}", host, port);
         let tcp = TcpStream::connect(&addr)
             .with_context(|| format!("Failed to establish TCP connection to {}", addr))?;
-        tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
-        tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
+        tcp.set_read_timeout(Some(Duration::from_secs(600)))?;
+        tcp.set_write_timeout(Some(Duration::from_secs(600)))?;
 
         let mut session = Session::new().context("Failed to create SSH session")?;
         session.set_tcp_stream(tcp);
@@ -81,19 +81,38 @@ impl SshClient {
     }
 
     pub fn upload_content(&self, remote_path: &str, content: &str) -> Result<()> {
-        let sftp = self
-            .session
-            .sftp()
-            .context("Failed to initialize SFTP subsystem")?;
-
-        let path = Path::new(remote_path);
-        let mut file = sftp
-            .create(path)
-            .with_context(|| format!("Failed to create remote file via SFTP at {}", remote_path))?;
-
-        file.write_all(content.as_bytes())
-            .with_context(|| format!("Failed to write content to {}", remote_path))?;
-
-        Ok(())
+        match self.session.sftp() {
+            Ok(sftp) => {
+                let path = Path::new(remote_path);
+                let mut file = sftp
+                    .create(path)
+                    .with_context(|| format!("Failed to create remote file via SFTP at {}", remote_path))?;
+                file.write_all(content.as_bytes())
+                    .with_context(|| format!("Failed to write content to {}", remote_path))?;
+                Ok(())
+            }
+            Err(sftp_err) => {
+                // Fallback: upload content via SSH channel using cat
+                let mut channel = self.session.channel_session().with_context(|| {
+                    format!(
+                        "SFTP failed ({}) and failed to open fallback SSH channel",
+                        sftp_err
+                    )
+                })?;
+                channel.exec(&format!("cat > {}", remote_path))?;
+                channel.write_all(content.as_bytes())?;
+                channel.send_eof()?;
+                channel.wait_close()?;
+                let exit_status = channel.exit_status()?;
+                if exit_status != 0 {
+                    anyhow::bail!(
+                        "SFTP subsystem failed ({}) and fallback upload via SSH channel exited with status {}",
+                        sftp_err,
+                        exit_status
+                    );
+                }
+                Ok(())
+            }
+        }
     }
 }

@@ -65,20 +65,62 @@ docker compose -f deploy/docker-compose.yml up -d
 
 ---
 
-### 3. Deploying to an Existing Server via CLI
+### 3. Deploying via CLI (Two Operational Modes)
 
-The CLI connects to your target Linux server via SSH, ensures Docker is ready, uploads `docker-compose.yml`, pulls the image, and launches the service.
+The CLI supports two flexible deployment modes:
+
+#### Multi-Platform Binary Compilation (macOS + Linux)
+You can compile release binaries for both macOS and Linux into the `bin/` folder in one command:
+```bash
+./scripts/build-binaries.sh
+```
+This produces:
+* `bin/disposable-cli-macos`: Native macOS executable.
+* `bin/disposable-cli-linux-amd64`: Linux x86_64 ELF executable (runs on Ubuntu, Debian, AWS EC2, etc.).
+
+---
+
+#### Mode A: Remote Deployment (From Developer Laptop via SSH)
+Connects from your laptop to the target Linux server via SSH, ensures Docker is ready, uploads configuration, and launches the service.
 
 ```bash
-# Compile CLI binary
-cargo build --release --bin disposable-cli
-
-# Deploy to existing target host
-./target/release/disposable-cli deploy --existing \
+# Using compiled macOS binary directly from bin/:
+./bin/disposable-cli-macos deploy --existing \
   --host 192.168.1.100 \
   --port 22 \
-  --user root \
+  --user ubuntu \
   --key ~/.ssh/id_ed25519
+
+# Or auto-install Docker without interactive prompt on a fresh empty server:
+./target/release/disposable-cli deploy --existing \
+  --host 192.168.1.100 \
+  --user ubuntu \
+  --key ~/.ssh/id_ed25519 \
+  --install-docker
+
+# Or prepare a fresh server by installing Docker & Docker Compose beforehand:
+./target/release/disposable-cli install-docker \
+  --host 192.168.1.100 \
+  --user ubuntu \
+  --key ~/.ssh/id_ed25519
+```
+
+#### Mode B: Local Deployment (Directly on Target Server)
+On a fresh Linux server, simply clone the repository and run the CLI directly without requiring SSH keys or network parameters:
+
+```bash
+# On the target server:
+git clone https://github.com/<YOUR_ORG>/disposable-service.git
+cd disposable-service
+
+# Deploy locally (auto-installs Docker if server is fresh & launches the service)
+cargo run -p disposable-cli -- deploy --local
+
+# Or with pre-compiled release binary:
+./target/release/disposable-cli deploy --local
+
+# Or prepare Docker locally before deploying:
+cargo run -p disposable-cli -- install-docker --local
 ```
 
 Once deployment completes, the CLI will output the direct access URL:
@@ -87,7 +129,7 @@ Once deployment completes, the CLI will output the direct access URL:
 🚀 Disposable Service Workspace is LIVE!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  Access URL:  http://192.168.1.100:80
+  Access URL:  http://50.19.154.110:80
   First Step:  Open the URL in your browser to claim and set your Single Password.
   Retention:   Strict Zero-Footprint ephemeral storage.
 ```
@@ -96,19 +138,26 @@ Once deployment completes, the CLI will output the direct access URL:
 
 ### 4. Teardown and Cleanup (Zero Trace)
 
-When you are finished with the workspace, tear down all containers and remove files:
+When you are finished with the workspace, tear down all containers and remove all files cleanly:
 
-#### Option A: Via CLI
+#### Mode A: Remote Teardown (From Laptop)
 ```bash
 ./target/release/disposable-cli teardown \
   --host 192.168.1.100 \
-  --user root \
+  --user ubuntu \
   --key ~/.ssh/id_ed25519
 ```
 
-#### Option B: Manual via SSH
+#### Mode B: Local Teardown (Directly on Server)
 ```bash
-ssh root@192.168.1.100 "cd /opt/disposable-service && docker compose down -v && rm -rf /opt/disposable-service"
+./target/release/disposable-cli teardown --local
+# or via cargo:
+cargo run -p disposable-cli -- teardown --local
+```
+
+#### Option C: Manual via SSH
+```bash
+ssh ubuntu@192.168.1.100 "cd /opt/disposable-service && docker compose down -v && sudo rm -rf /opt/disposable-service"
 ```
 
 ---
