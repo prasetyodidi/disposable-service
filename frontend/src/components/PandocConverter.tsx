@@ -164,7 +164,7 @@ export const PandocConverter: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-surface-soft flex flex-col">
+    <div className="min-h-screen bg-surface-soft dark:bg-dark-canvas flex flex-col transition-colors">
       <Navbar currentPath="/pandoc" />
 
       <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-10">
@@ -173,24 +173,24 @@ export const PandocConverter: React.FC = () => {
             <Sparkles size={14} />
             <span>Service Utility</span>
           </div>
-          <h1 className="text-3xl font-bold text-ink tracking-tight mb-2">
+          <h1 className="text-3xl font-bold text-ink dark:text-dark-ink tracking-tight mb-2">
             Markdown to PDF Converter
           </h1>
-          <p className="text-sm text-muted">
+          <p className="text-sm text-muted dark:text-dark-muted">
             Typeset and compile markdown to PDF via Pandoc and LaTeX pdflatex engine.
           </p>
         </div>
 
         {error && (
-          <div className="bg-red-50 border border-red-200 text-airbnb-error px-4 py-3 rounded-sm text-sm mb-6 flex items-start gap-2.5">
+          <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-airbnb-error dark:text-red-400 px-4 py-3 rounded-sm text-sm mb-6 flex items-start gap-2.5">
             <AlertCircle size={18} className="shrink-0 mt-0.5" />
             <div className="flex-1 overflow-x-auto font-mono text-xs">{error}</div>
           </div>
         )}
 
         {successMsg && (
-          <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-sm text-sm mb-6 flex items-center gap-2.5">
-            <CheckCircle2 size={18} className="text-emerald-600 shrink-0" />
+          <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-400 px-4 py-3 rounded-sm text-sm mb-6 flex items-center gap-2.5">
+            <CheckCircle2 size={18} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
             <span>{successMsg}</span>
           </div>
         )}
@@ -198,10 +198,10 @@ export const PandocConverter: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Main Input Area (2 Cols) */}
           <div className="lg:col-span-2 space-y-6">
-            <div className="bg-white rounded-md shadow-airbnb p-6 border border-hairline-soft">
+            <div className="bg-white dark:bg-dark-card rounded-md shadow-airbnb p-6 border border-hairline-soft dark:border-dark-hairline">
               {/* Tab Selector */}
-              <div className="flex items-center justify-between mb-5 pb-4 border-b border-hairline-soft">
-                <div className="inline-flex bg-surface-strong p-1 rounded-full gap-1">
+              <div className="flex items-center justify-between mb-5 pb-4 border-b border-hairline-soft dark:border-dark-hairline">
+                <div className="inline-flex bg-surface-strong dark:bg-dark-surface p-1 rounded-full gap-1">
                   <button
                     onClick={() => {
                       setMode('paste');
@@ -209,8 +209,8 @@ export const PandocConverter: React.FC = () => {
                     }}
                     className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
                       mode === 'paste'
-                        ? 'bg-white text-ink shadow-xs'
-                        : 'text-muted hover:text-ink'
+                        ? 'bg-white dark:bg-dark-card text-ink dark:text-dark-ink shadow-xs'
+                        : 'text-muted dark:text-dark-muted hover:text-ink dark:hover:text-dark-ink'
                     }`}
                   >
                     Paste Raw Markdown
@@ -222,8 +222,8 @@ export const PandocConverter: React.FC = () => {
                     }}
                     className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
                       mode === 'upload'
-                        ? 'bg-white text-ink shadow-xs'
-                        : 'text-muted hover:text-ink'
+                        ? 'bg-white dark:bg-dark-card text-ink dark:text-dark-ink shadow-xs'
+                        : 'text-muted dark:text-dark-muted hover:text-ink dark:hover:text-dark-ink'
                     }`}
                   >
                     Upload File (.md)
@@ -249,9 +249,9 @@ export const PandocConverter: React.FC = () => {
                     value={markdown}
                     onChange={(e) => setMarkdown(e.target.value)}
                     placeholder="# Type or paste your Markdown content here...&#10;&#10;Supports headers, tables, code fences, blockquotes, lists, and LaTeX math formulas."
-                    className="w-full p-4 text-sm font-mono bg-white border border-hairline rounded-sm text-ink placeholder:text-muted focus:border-ink focus:ring-0 outline-none transition-all resize-y leading-relaxed"
+                    className="w-full p-4 text-sm font-mono bg-white dark:bg-dark-surface border border-hairline dark:border-dark-border rounded-sm text-ink dark:text-dark-ink placeholder:text-muted dark:placeholder:text-dark-muted-soft focus:border-ink dark:focus:border-dark-ink focus:ring-0 outline-none transition-all resize-y leading-relaxed"
                   />
-                  <div className="flex justify-between items-center mt-2 text-xs text-muted">
+                  <div className="flex justify-between items-center mt-2 text-xs text-muted dark:text-dark-muted">
                     <span>Markdown input format</span>
                     <span>
                       {markdown.length} characters • {markdown.split('\n').length} lines
@@ -266,7 +266,7 @@ export const PandocConverter: React.FC = () => {
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={handleDrop}
                   onClick={() => fileInputRef.current?.click()}
-                  className="border-2 border-dashed border-hairline hover:border-ink rounded-sm p-10 text-center cursor-pointer transition-colors bg-surface-soft/40"
+                  className="border-2 border-dashed border-hairline dark:border-dark-border hover:border-ink dark:hover:border-dark-ink rounded-sm p-10 text-center cursor-pointer transition-colors bg-surface-soft/40 dark:bg-dark-surface/40"
                 >
                   <input
                     type="file"
@@ -278,12 +278,12 @@ export const PandocConverter: React.FC = () => {
 
                   {file ? (
                     <div className="space-y-3">
-                      <div className="w-12 h-12 rounded-full bg-rose-50 text-rausch mx-auto flex items-center justify-center">
+                      <div className="w-12 h-12 rounded-full bg-rose-50 dark:bg-rose-950/40 text-rausch mx-auto flex items-center justify-center">
                         <FileText size={24} />
                       </div>
                       <div>
-                        <p className="font-semibold text-ink text-sm">{file.name}</p>
-                        <p className="text-xs text-muted">{(file.size / 1024).toFixed(1)} KB</p>
+                        <p className="font-semibold text-ink dark:text-dark-ink text-sm">{file.name}</p>
+                        <p className="text-xs text-muted dark:text-dark-muted">{(file.size / 1024).toFixed(1)} KB</p>
                       </div>
                       <button
                         type="button"
@@ -291,7 +291,7 @@ export const PandocConverter: React.FC = () => {
                           e.stopPropagation();
                           setFile(null);
                         }}
-                        className="inline-flex items-center gap-1 text-xs text-red-600 hover:underline cursor-pointer"
+                        className="inline-flex items-center gap-1 text-xs text-red-600 dark:text-red-400 hover:underline cursor-pointer"
                       >
                         <Trash2 size={13} />
                         <span>Remove file</span>
@@ -299,14 +299,14 @@ export const PandocConverter: React.FC = () => {
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      <div className="w-12 h-12 rounded-full bg-surface-strong text-muted mx-auto flex items-center justify-center">
+                      <div className="w-12 h-12 rounded-full bg-surface-strong dark:bg-dark-surface text-muted dark:text-dark-muted mx-auto flex items-center justify-center">
                         <Upload size={22} />
                       </div>
                       <div>
-                        <p className="font-semibold text-ink text-sm">
+                        <p className="font-semibold text-ink dark:text-dark-ink text-sm">
                           Click to upload or drag & drop
                         </p>
-                        <p className="text-xs text-muted mt-1">
+                        <p className="text-xs text-muted dark:text-dark-muted mt-1">
                           Supported files: Markdown (.md, .markdown, .txt)
                         </p>
                       </div>
@@ -316,8 +316,8 @@ export const PandocConverter: React.FC = () => {
               )}
 
               {/* Action Button */}
-              <div className="mt-6 pt-4 border-t border-hairline-soft flex items-center justify-between">
-                <span className="text-xs text-muted">
+              <div className="mt-6 pt-4 border-t border-hairline-soft dark:border-dark-hairline flex items-center justify-between">
+                <span className="text-xs text-muted dark:text-dark-muted">
                   Strict Zero-Footprint: Auto-deleted post-download
                 </span>
 
@@ -335,46 +335,46 @@ export const PandocConverter: React.FC = () => {
 
           {/* Sidebar / Parameters Card (1 Col) */}
           <div className="space-y-6">
-            <div className="bg-white rounded-md shadow-airbnb p-6 border border-hairline-soft">
-              <div className="flex items-center gap-2 mb-4 pb-3 border-b border-hairline-soft">
+            <div className="bg-white dark:bg-dark-card rounded-md shadow-airbnb p-6 border border-hairline-soft dark:border-dark-hairline">
+              <div className="flex items-center gap-2 mb-4 pb-3 border-b border-hairline-soft dark:border-dark-hairline">
                 <Sliders size={18} className="text-rausch" />
-                <h3 className="text-sm font-bold text-ink uppercase tracking-wider">
+                <h3 className="text-sm font-bold text-ink dark:text-dark-ink uppercase tracking-wider">
                   Pandoc Preset Specs
                 </h3>
               </div>
 
               <div className="space-y-3.5 text-xs">
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60">
-                  <span className="text-muted">PDF Engine:</span>
-                  <span className="font-mono font-semibold text-ink">pdflatex</span>
+                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
+                  <span className="text-muted dark:text-dark-muted">PDF Engine:</span>
+                  <span className="font-mono font-semibold text-ink dark:text-dark-ink">pdflatex</span>
                 </div>
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60">
-                  <span className="text-muted">Paper Size:</span>
-                  <span className="font-mono font-semibold text-ink">A4</span>
+                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
+                  <span className="text-muted dark:text-dark-muted">Paper Size:</span>
+                  <span className="font-mono font-semibold text-ink dark:text-dark-ink">A4</span>
                 </div>
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60">
-                  <span className="text-muted">Page Margins:</span>
-                  <span className="font-mono text-ink">top/bottom 1.8cm, left/right 2cm</span>
+                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
+                  <span className="text-muted dark:text-dark-muted">Page Margins:</span>
+                  <span className="font-mono text-ink dark:text-dark-ink">top/bottom 1.8cm, left/right 2cm</span>
                 </div>
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60">
-                  <span className="text-muted">Typography Font:</span>
-                  <span className="font-mono text-ink">Helvetica Neue / Standard</span>
+                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
+                  <span className="text-muted dark:text-dark-muted">Typography Font:</span>
+                  <span className="font-mono text-ink dark:text-dark-ink">Helvetica Neue / Standard</span>
                 </div>
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60">
-                  <span className="text-muted">Base Font Size:</span>
-                  <span className="font-mono text-ink">10.5pt</span>
+                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
+                  <span className="text-muted dark:text-dark-muted">Base Font Size:</span>
+                  <span className="font-mono text-ink dark:text-dark-ink">10.5pt</span>
                 </div>
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60">
-                  <span className="text-muted">Line Height:</span>
-                  <span className="font-mono text-ink">1.25</span>
+                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
+                  <span className="text-muted dark:text-dark-muted">Line Height:</span>
+                  <span className="font-mono text-ink dark:text-dark-ink">1.25</span>
                 </div>
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60">
-                  <span className="text-muted">Colorlinks:</span>
-                  <span className="font-mono text-ink font-semibold">Navy Blue (true)</span>
+                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
+                  <span className="text-muted dark:text-dark-muted">Colorlinks:</span>
+                  <span className="font-mono text-ink dark:text-dark-ink font-semibold">Navy Blue (true)</span>
                 </div>
               </div>
 
-              <div className="mt-6 p-3 bg-surface-soft rounded-sm text-xs text-muted leading-relaxed">
+              <div className="mt-6 p-3 bg-surface-soft dark:bg-dark-surface rounded-sm text-xs text-muted dark:text-dark-muted leading-relaxed">
                 💡 Configuration matches Section 4.3.2 of the PRD exactly for consistent executive publication standards.
               </div>
             </div>

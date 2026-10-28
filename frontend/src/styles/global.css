@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 
@@ -22,6 +24,18 @@
   --color-airbnb-error: #c13515;
   --color-airbnb-success: #008a05;
 
+  /* Dark mode specific tokens */
+  --color-dark-canvas: #121214;
+  --color-dark-card: #1c1c1f;
+  --color-dark-surface: #242428;
+  --color-dark-surface-hover: #2e2e34;
+  --color-dark-hairline: #2a2a30;
+  --color-dark-border: #3c3c46;
+  --color-dark-ink: #f4f4f6;
+  --color-dark-body: #d2d2d6;
+  --color-dark-muted: #94949f;
+  --color-dark-muted-soft: #6e6e78;
+
   --radius-sm: 8px;
   --radius-md: 14px;
   --radius-lg: 20px;
@@ -38,3 +52,9 @@ body {
   color: var(--color-ink);
   -webkit-font-smoothing: antialiased;
 }
+
+.dark body {
+  background-color: var(--color-dark-canvas);
+  color: var(--color-dark-ink);
+}
+

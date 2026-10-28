@@ -71,23 +71,23 @@ export const ActiveSessionsModal: React.FC<ActiveSessionsModalProps> = ({
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-md shadow-airbnb-modal max-w-xl w-full p-6 sm:p-8 max-h-[85vh] overflow-y-auto"
+        className="bg-white dark:bg-dark-card border border-hairline-soft dark:border-dark-hairline rounded-md shadow-airbnb-modal max-w-xl w-full p-6 sm:p-8 max-h-[85vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex justify-between items-center mb-5">
           <div className="flex items-center gap-3">
-            <div className="bg-surface-soft p-2.5 rounded-sm text-rausch">
+            <div className="bg-surface-soft dark:bg-dark-surface p-2.5 rounded-sm text-rausch">
               <Shield size={22} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-ink">Active Sessions</h2>
-              <p className="text-xs text-muted">
+              <h2 className="text-lg font-bold text-ink dark:text-dark-ink">Active Sessions</h2>
+              <p className="text-xs text-muted dark:text-dark-muted">
                 Single password authentication tracking by device & IP
               </p>
             </div>
           </div>
           <button
-            className="p-2 text-muted hover:text-ink rounded-full hover:bg-surface-strong transition-colors cursor-pointer"
+            className="p-2 text-muted dark:text-dark-muted hover:text-ink dark:hover:text-dark-ink rounded-full hover:bg-surface-strong dark:hover:bg-dark-surface transition-colors cursor-pointer"
             onClick={onClose}
           >
             <X size={20} />
@@ -95,50 +95,50 @@ export const ActiveSessionsModal: React.FC<ActiveSessionsModalProps> = ({
         </div>
 
         {error && (
-          <div className="bg-red-50 border border-red-200 text-airbnb-error px-4 py-3 rounded-sm text-sm mb-4">
+          <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-airbnb-error dark:text-red-400 px-4 py-3 rounded-sm text-sm mb-4">
             {error}
           </div>
         )}
 
         {loading ? (
-          <div className="py-10 text-center text-muted text-sm">
+          <div className="py-10 text-center text-muted dark:text-dark-muted text-sm">
             Loading active sessions...
           </div>
         ) : sessions.length === 0 ? (
-          <div className="py-10 text-center text-muted text-sm">
+          <div className="py-10 text-center text-muted dark:text-dark-muted text-sm">
             No other active sessions detected.
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full border-collapse mt-2">
               <thead>
-                <tr className="border-b border-hairline-soft">
-                  <th className="text-left py-3 px-3 text-xs font-semibold text-muted uppercase tracking-wider">Device</th>
-                  <th className="text-left py-3 px-3 text-xs font-semibold text-muted uppercase tracking-wider">IP Address</th>
-                  <th className="text-left py-3 px-3 text-xs font-semibold text-muted uppercase tracking-wider">Login Time</th>
+                <tr className="border-b border-hairline-soft dark:border-dark-hairline">
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-muted dark:text-dark-muted uppercase tracking-wider">Device</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-muted dark:text-dark-muted uppercase tracking-wider">IP Address</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-muted dark:text-dark-muted uppercase tracking-wider">Login Time</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-hairline-soft">
+              <tbody className="divide-y divide-hairline-soft dark:divide-dark-hairline">
                 {sessions.map((s) => {
                   const { icon, label } = parseUserAgent(s.user_agent);
                   return (
-                    <tr key={s.session_id} className="hover:bg-surface-soft/60">
+                    <tr key={s.session_id} className="hover:bg-surface-soft/60 dark:hover:bg-dark-surface/60">
                       <td className="py-3 px-3">
-                        <div className="flex items-center gap-2 font-medium text-ink text-sm">
-                          <span className="text-muted">{icon}</span>
+                        <div className="flex items-center gap-2 font-medium text-ink dark:text-dark-ink text-sm">
+                          <span className="text-muted dark:text-dark-muted">{icon}</span>
                           <span>{label}</span>
                         </div>
-                        <div className="text-[11px] text-muted-soft max-w-[200px] truncate">
+                        <div className="text-[11px] text-muted-soft dark:text-dark-muted-soft max-w-[200px] truncate">
                           {s.user_agent}
                         </div>
                       </td>
                       <td className="py-3 px-3">
                         <div className="flex items-center gap-1.5 text-sm">
-                          <Globe size={14} className="text-muted-soft" />
-                          <span className="font-mono text-xs text-body">{s.ip_address}</span>
+                          <Globe size={14} className="text-muted-soft dark:text-dark-muted-soft" />
+                          <span className="font-mono text-xs text-body dark:text-dark-body">{s.ip_address}</span>
                         </div>
                       </td>
-                      <td className="py-3 px-3 text-sm text-muted">
+                      <td className="py-3 px-3 text-sm text-muted dark:text-dark-muted">
                         <div className="flex items-center gap-1.5">
                           <Clock size={14} />
                           <span>{formatDate(s.login_time)}</span>
@@ -152,13 +152,13 @@ export const ActiveSessionsModal: React.FC<ActiveSessionsModalProps> = ({
           </div>
         )}
 
-        <div className="mt-6 pt-5 flex items-center justify-between border-t border-hairline-soft">
-          <span className="text-xs text-muted">
-            Total Active: <strong className="text-ink">{sessions.length}</strong>
+        <div className="mt-6 pt-5 flex items-center justify-between border-t border-hairline-soft dark:border-dark-hairline">
+          <span className="text-xs text-muted dark:text-dark-muted">
+            Total Active: <strong className="text-ink dark:text-dark-ink">{sessions.length}</strong>
           </span>
           <div className="flex gap-2.5">
             <button
-              className="h-10 px-4 text-sm font-semibold text-ink bg-white border border-hairline hover:border-ink rounded-sm transition-all cursor-pointer"
+              className="h-10 px-4 text-sm font-semibold text-ink dark:text-dark-ink bg-white dark:bg-dark-surface border border-hairline dark:border-dark-border hover:border-ink dark:hover:border-dark-ink rounded-sm transition-all cursor-pointer"
               onClick={onClose}
             >
               Close

@@ -21,8 +21,21 @@ const {
     <title>{title}</title>
     <meta name="description" content={description} />
     <meta name="theme-color" content="#ffffff" />
+    <script is:inline>
+      (function() {
+        try {
+          const stored = localStorage.getItem('disposable_theme');
+          const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          if (stored === 'dark' || (!stored && prefersDark)) {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+        } catch (_) {}
+      })();
+    </script>
   </head>
-  <body class="min-h-screen bg-surface-soft text-ink font-sans">
+  <body class="min-h-screen bg-surface-soft dark:bg-dark-canvas text-ink dark:text-dark-ink font-sans transition-colors duration-200">
     <slot />
   </body>
 </html>

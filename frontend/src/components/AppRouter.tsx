@@ -104,10 +104,10 @@ export const AppRouter: React.FC<AppRouterProps> = ({ page }) => {
 
   if (checking) {
     return (
-      <div className="min-h-screen bg-surface-soft flex items-center justify-center">
+      <div className="min-h-screen bg-surface-soft dark:bg-dark-canvas flex items-center justify-center transition-colors">
         <div className="text-center space-y-3">
           <div className="w-10 h-10 border-4 border-rausch border-t-transparent rounded-full animate-spin mx-auto"></div>
-          <p className="text-xs font-semibold text-muted uppercase tracking-wider">
+          <p className="text-xs font-semibold text-muted dark:text-dark-muted uppercase tracking-wider">
             Verifying Workspace Environment...
           </p>
         </div>
