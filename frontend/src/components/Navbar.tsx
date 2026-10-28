@@ -57,6 +57,16 @@ export const Navbar: React.FC<NavbarProps> = ({ currentPath = '/', onLogout }) =
           >
             Pandoc PDF
           </a>
+          <a
+            href="/monitor"
+            className={`flex items-center h-full px-1 text-[15px] font-medium transition-colors relative ${
+              currentPath === '/monitor'
+                ? 'text-ink font-semibold after:content-[""] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-ink'
+                : 'text-muted hover:text-ink'
+            }`}
+          >
+            Host Monitor
+          </a>
         </nav>
 
         <div className="flex items-center gap-2 sm:gap-3">

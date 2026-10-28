@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod monitor;
 pub mod pandoc;
 
 use axum::routing::{get, post};
@@ -18,4 +19,6 @@ pub fn create_api_router() -> Router<AppState> {
             "/api/apps/pandoc/convert-upload",
             post(pandoc::convert_pandoc_multipart),
         )
+        .route("/api/apps/monitor/metrics", get(monitor::get_host_metrics))
+        .route("/api/apps/monitor/stream", get(monitor::stream_host_metrics))
 }

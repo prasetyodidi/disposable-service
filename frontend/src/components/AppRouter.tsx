@@ -1,17 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { DashboardView } from './DashboardView';
 import { PandocConverter } from './PandocConverter';
+import { ServerMonitor } from './ServerMonitor';
+import { FloatingMonitor } from './FloatingMonitor';
 import { SetupCard } from './SetupCard';
 import { LoginCard } from './LoginCard';
 
 interface AppRouterProps {
-  page: 'dashboard' | 'pandoc' | 'setup' | 'login';
+  page: 'dashboard' | 'pandoc' | 'monitor' | 'setup' | 'login';
 }
 
 // Peta page prop → pathname yang diharapkan
 const PAGE_PATH: Record<AppRouterProps['page'], string> = {
   dashboard: '/',
   pandoc: '/pandoc',
+  monitor: '/monitor',
   setup: '/setup',
   login: '/login',
 };
@@ -112,16 +115,21 @@ export const AppRouter: React.FC<AppRouterProps> = ({ page }) => {
     );
   }
 
-  switch (page) {
-    case 'setup':
-      return <SetupCard />;
-    case 'login':
-      return <LoginCard />;
-    case 'pandoc':
-      return <PandocConverter />;
-    case 'dashboard':
-    default:
-      return <DashboardView />;
+  if (page === 'setup') {
+    return <SetupCard />;
   }
+
+  if (page === 'login') {
+    return <LoginCard />;
+  }
+
+  return (
+    <>
+      {page === 'pandoc' && <PandocConverter />}
+      {page === 'monitor' && <ServerMonitor />}
+      {page === 'dashboard' && <DashboardView />}
+      {page !== 'monitor' && <FloatingMonitor />}
+    </>
+  );
 };
 

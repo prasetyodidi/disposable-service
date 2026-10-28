@@ -1,6 +1,6 @@
 [package]
 name = "disposable-server"
-version = "0.1.0"
+version = "1.1.0"
 edition = "2021"
 
 [dependencies]
@@ -9,7 +9,7 @@ axum = { version = "0.7", features = ["multipart"] }
 axum-extra = { version = "0.9", features = ["cookie"] }
 tokio = { version = "1.38", features = ["full"] }
 tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
-tower = "0.4"
+tower = { version = "0.4", features = ["util"] }
 argon2 = "0.5"
 jsonwebtoken = "9.3"
 serde = { version = "1.0", features = ["derive"] }
@@ -20,3 +20,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"
 time = "0.3"
+sysinfo = "0.33"
+async-stream = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
+

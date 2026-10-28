@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileText, ArrowRight, ShieldCheck, Cpu, HardDrive } from 'lucide-react';
+import { FileText, ArrowRight, ShieldCheck, Cpu, HardDrive, Activity } from 'lucide-react';
 import { Navbar } from './Navbar';
 
 export const DashboardView: React.FC = () => {
@@ -55,6 +55,42 @@ export const DashboardView: React.FC = () => {
                 className="w-full h-11 bg-rausch hover:bg-rausch-active text-white text-sm font-semibold rounded-sm flex items-center justify-center gap-2 transition-colors no-underline cursor-pointer shadow-xs"
               >
                 <span>Launch Converter</span>
+                <ArrowRight size={16} />
+              </a>
+            </div>
+          </div>
+
+          {/* Host Monitor Service Card */}
+          <div className="bg-white rounded-md shadow-airbnb hover:shadow-airbnb-hover transition-all duration-200 p-6 flex flex-col justify-between border border-hairline-soft group">
+            <div>
+              <div className="flex items-start justify-between mb-4">
+                <div className="w-12 h-12 rounded-sm bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                  <Activity size={24} />
+                </div>
+                <span className="bg-emerald-50 text-emerald-700 text-[11px] font-semibold px-2.5 py-1 rounded-full border border-emerald-200">
+                  App 2 • Live SSE
+                </span>
+              </div>
+
+              <h2 className="text-lg font-bold text-ink mb-2 group-hover:text-rausch transition-colors">
+                Host System Monitor
+              </h2>
+              <p className="text-sm text-body leading-relaxed mb-6">
+                Read-only real-time streaming telemetry of host CPU cores, RAM, swap, storage, and top active processes via Server-Sent Events.
+              </p>
+            </div>
+
+            <div>
+              <div className="pt-4 border-t border-hairline-soft mb-5 flex items-center justify-between text-xs text-muted">
+                <span>Protocol: SSE stream</span>
+                <span>Type: Host telemetry</span>
+              </div>
+
+              <a
+                href="/monitor"
+                className="w-full h-11 bg-ink hover:bg-black text-white text-sm font-semibold rounded-sm flex items-center justify-center gap-2 transition-colors no-underline cursor-pointer shadow-xs"
+              >
+                <span>Open Monitor Panel</span>
                 <ArrowRight size={16} />
               </a>
             </div>

@@ -15,6 +15,7 @@ Welcome to the **Disposable Service Workspace** repository. This document serves
   - **Session Management:** Ephemeral JWT stored in `HttpOnly` cookies with a hardcoded 1-hour expiration.
   - **In-Memory Session Tracker:** Tracks active sessions by IP address and User-Agent (`/api/sessions`).
   - **Document Engine (`/api/apps/pandoc`):** Subprocess wrapper around `pandoc` + `pdflatex` with an RAII Drop guard (`TempDirGuard`) guaranteeing instant cleanup of all temporary files.
+  - **Host Monitoring Service (`/api/apps/monitor`):** Real-time read-only host telemetry stream (CPU cores, RAM, swap, disks, top processes) via Server-Sent Events (`/api/apps/monitor/stream`).
   - **Static File Serving:** Serves compiled Astro frontend assets (`dist/`) directly on port 80.
 - **Frontend (`frontend/`):** Built with **Astro 5** + **React 19** (CSR / React Islands) styled using **Tailwind CSS v4** (`@tailwindcss/vite`) adhering to the **Airbnb Inspired Design System** (Rausch `#ff385c`, clean white canvas, ink text `#222222`, 1-tier subtle shadow).
 - **Deployment Packaging (`deploy/`):** Multi-stage `Dockerfile` and `docker-compose.yml`.

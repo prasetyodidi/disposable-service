@@ -3,8 +3,11 @@ services:
     image: ${DISPOSABLE_IMAGE:-ghcr.io/prasetyodidi/core-service:latest}
     container_name: disposable-workspace
     restart: unless-stopped
+    pid: "host"
     ports:
       - "80:80"
+    volumes:
+      - /sys:/sys:ro
     environment:
       - PORT=80
       - HOST=0.0.0.0
