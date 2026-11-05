@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod mcp;
 pub mod monitor;
 pub mod pandoc;
 
@@ -19,6 +20,12 @@ pub fn create_api_router() -> Router<AppState> {
             "/api/apps/pandoc/convert-upload",
             post(pandoc::convert_pandoc_multipart),
         )
+        .route(
+            "/api/apps/pandoc/download/:token",
+            get(pandoc::download_pandoc_ephemeral),
+        )
         .route("/api/apps/monitor/metrics", get(monitor::get_host_metrics))
         .route("/api/apps/monitor/stream", get(monitor::stream_host_metrics))
+        .route("/api/mcp/sse", get(mcp::mcp_sse_handler))
+        .route("/api/mcp/message", post(mcp::mcp_message_handler))
 }

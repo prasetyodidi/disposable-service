@@ -78,6 +78,7 @@ pub fn validate_jwt(token: &str, secret: &[u8]) -> Result<Claims, String> {
     Ok(token_data.claims)
 }
 
+#[derive(Debug)]
 #[allow(dead_code)]
 pub struct AuthenticatedSession(pub SessionInfo);
 
@@ -89,21 +90,47 @@ impl FromRequestParts<AppState> for AuthenticatedSession {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let jar = CookieJar::from_request_parts(parts, state)
-            .await
-            .map_err(|_| (StatusCode::UNAUTHORIZED, "Unauthorized").into_response())?;
+        // 1. Check Authorization: Bearer <token> header first
+        let bearer_token = parts
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|val| val.to_str().ok())
+            .and_then(|val| {
+                val.strip_prefix("Bearer ")
+                    .or_else(|| val.strip_prefix("bearer "))
+                    .map(|t| t.trim().to_string())
+            });
 
-        let cookie = jar
-            .get(COOKIE_NAME)
+        // 2. Fallback to disposable_session cookie if no Bearer token
+        let token_str = match bearer_token {
+            Some(t) => Some(t),
+            None => {
+                let jar = CookieJar::from_request_parts(parts, state)
+                    .await
+                    .map_err(|_| (StatusCode::UNAUTHORIZED, "Unauthorized").into_response())?;
+                jar.get(COOKIE_NAME).map(|c| c.value().to_string())
+            }
+        };
+
+        let token = token_str
             .ok_or_else(|| (StatusCode::UNAUTHORIZED, "No active session").into_response())?;
 
-        let claims = validate_jwt(cookie.value(), &state.jwt_secret)
-            .map_err(|_| (StatusCode::UNAUTHORIZED, "Session expired or invalid").into_response())?;
+        // 3. Validate token: Try JWT validation first; if valid, fetch session by claims.sub
+        let session = if let Ok(claims) = validate_jwt(&token, &state.jwt_secret) {
+            if let Some(s) = state.get_session(&claims.sub).await {
+                Some(s)
+            } else {
+                // If claims.sub session not found, also check direct session token
+                state.get_session(&token).await
+            }
+        } else {
+            // Also allow direct login session token if it matches a valid session in state
+            state.get_session(&token).await
+        };
 
-        let session = state
-            .get_session(&claims.sub)
-            .await
-            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "Session not found or revoked").into_response())?;
+        let session = session.ok_or_else(|| {
+            (StatusCode::UNAUTHORIZED, "Session expired or invalid").into_response()
+        })?;
 
         Ok(AuthenticatedSession(session))
     }
@@ -112,6 +139,7 @@ impl FromRequestParts<AppState> for AuthenticatedSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::Request;
 
     #[test]
     fn test_password_hashing_and_verification() {
@@ -132,5 +160,115 @@ mod tests {
 
         let wrong_secret = b"wrong_secret_key_12345678901234567890";
         assert!(validate_jwt(&token, wrong_secret).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_bearer_token_authentication_jwt() {
+        let state = AppState::new();
+        let session_id = "session-bearer-jwt-1";
+        let session = SessionInfo {
+            session_id: session_id.to_string(),
+            ip_address: "127.0.0.1".to_string(),
+            user_agent: "TestAgent".to_string(),
+            login_time: Utc::now(),
+            expires_at: Utc::now() + Duration::hours(1),
+        };
+        state.add_session(session).await;
+
+        let (jwt, _) = create_jwt(session_id, &state.jwt_secret).unwrap();
+
+        // 1. With Bearer token in Authorization header
+        let req = Request::builder()
+            .header("Authorization", format!("Bearer {}", jwt))
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+
+        let auth = AuthenticatedSession::from_request_parts(&mut parts, &state).await;
+        assert!(auth.is_ok());
+        assert_eq!(auth.unwrap().0.session_id, session_id);
+
+        // 2. Case-insensitive 'bearer' prefix
+        let req = Request::builder()
+            .header("Authorization", format!("bearer {}", jwt))
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+
+        let auth = AuthenticatedSession::from_request_parts(&mut parts, &state).await;
+        assert!(auth.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_bearer_token_authentication_direct_session_id() {
+        let state = AppState::new();
+        let session_id = "session-direct-token-999";
+        let session = SessionInfo {
+            session_id: session_id.to_string(),
+            ip_address: "127.0.0.1".to_string(),
+            user_agent: "TestAgent".to_string(),
+            login_time: Utc::now(),
+            expires_at: Utc::now() + Duration::hours(1),
+        };
+        state.add_session(session).await;
+
+        // Use raw session_id directly as Bearer token
+        let req = Request::builder()
+            .header("Authorization", format!("Bearer {}", session_id))
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+
+        let auth = AuthenticatedSession::from_request_parts(&mut parts, &state).await;
+        assert!(auth.is_ok());
+        assert_eq!(auth.unwrap().0.session_id, session_id);
+    }
+
+    #[tokio::test]
+    async fn test_cookie_authentication() {
+        let state = AppState::new();
+        let session_id = "session-cookie-test-42";
+        let session = SessionInfo {
+            session_id: session_id.to_string(),
+            ip_address: "127.0.0.1".to_string(),
+            user_agent: "TestAgent".to_string(),
+            login_time: Utc::now(),
+            expires_at: Utc::now() + Duration::hours(1),
+        };
+        state.add_session(session).await;
+
+        let (jwt, _) = create_jwt(session_id, &state.jwt_secret).unwrap();
+
+        let req = Request::builder()
+            .header("Cookie", format!("{}={}", COOKIE_NAME, jwt))
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+
+        let auth = AuthenticatedSession::from_request_parts(&mut parts, &state).await;
+        assert!(auth.is_ok());
+        assert_eq!(auth.unwrap().0.session_id, session_id);
+    }
+
+    #[tokio::test]
+    async fn test_auth_rejection_missing_or_invalid() {
+        let state = AppState::new();
+
+        // 1. Missing header and cookie -> 401
+        let req = Request::builder().body(()).unwrap();
+        let (mut parts, _) = req.into_parts();
+        let res = AuthenticatedSession::from_request_parts(&mut parts, &state).await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().status(), StatusCode::UNAUTHORIZED);
+
+        // 2. Invalid Bearer token -> 401
+        let req = Request::builder()
+            .header("Authorization", "Bearer invalid-garbage-token")
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+        let res = AuthenticatedSession::from_request_parts(&mut parts, &state).await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().status(), StatusCode::UNAUTHORIZED);
     }
 }

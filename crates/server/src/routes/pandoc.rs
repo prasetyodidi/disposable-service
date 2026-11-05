@@ -1,4 +1,4 @@
-use axum::extract::Multipart;
+use axum::extract::{Multipart, Path, State};
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -10,9 +10,10 @@ use tokio::process::Command;
 use uuid::Uuid;
 
 use crate::auth::AuthenticatedSession;
+use crate::state::AppState;
 
-struct TempDirGuard {
-    path: PathBuf,
+pub struct TempDirGuard {
+    pub path: PathBuf,
 }
 
 impl Drop for TempDirGuard {
@@ -85,21 +86,17 @@ pub async fn convert_pandoc_multipart(
     execute_pandoc_conversion(&markdown_content, &original_filename).await
 }
 
-async fn execute_pandoc_conversion(
+pub async fn generate_pandoc_pdf_bytes(
     markdown: &str,
-    output_filename: &str,
-) -> Result<Response, (StatusCode, Json<ApiResponse<()>>)> {
+    _output_filename: &str,
+) -> Result<Vec<u8>, (StatusCode, String)> {
     let job_id = Uuid::new_v4().to_string();
     let temp_dir_path = std::env::temp_dir().join(format!("pandoc-job-{}", job_id));
 
     if let Err(e) = fs::create_dir_all(&temp_dir_path).await {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse {
-                success: false,
-                message: Some(format!("Failed to create temporary workspace: {}", e)),
-                data: None,
-            }),
+            format!("Failed to create temporary workspace: {}", e),
         ));
     }
 
@@ -113,11 +110,7 @@ async fn execute_pandoc_conversion(
     if let Err(e) = fs::write(&input_path, markdown).await {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse {
-                success: false,
-                message: Some(format!("Failed to write input markdown: {}", e)),
-                data: None,
-            }),
+            format!("Failed to write input markdown: {}", e),
         ));
     }
 
@@ -153,14 +146,10 @@ async fn execute_pandoc_conversion(
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse {
-                    success: false,
-                    message: Some(format!(
-                        "Failed to execute pandoc binary (is pandoc installed?): {}",
-                        e
-                    )),
-                    data: None,
-                }),
+                format!(
+                    "Failed to execute pandoc binary (is pandoc installed?): {}",
+                    e
+                ),
             ));
         }
     };
@@ -169,11 +158,7 @@ async fn execute_pandoc_conversion(
         let stderr_str = String::from_utf8_lossy(&output.stderr);
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ApiResponse {
-                success: false,
-                message: Some(format!("Pandoc conversion failed: {}", stderr_str)),
-                data: None,
-            }),
+            format!("Pandoc conversion failed: {}", stderr_str),
         ));
     }
 
@@ -182,14 +167,35 @@ async fn execute_pandoc_conversion(
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse {
-                    success: false,
-                    message: Some(format!("Failed to read generated PDF: {}", e)),
-                    data: None,
-                }),
+                format!("Failed to read generated PDF: {}", e),
             ));
         }
     };
+
+    // Explicit early cleanup before returning
+    if temp_dir_path.exists() {
+        let _ = fs::remove_dir_all(&temp_dir_path).await;
+    }
+
+    Ok(pdf_bytes)
+}
+
+async fn execute_pandoc_conversion(
+    markdown: &str,
+    output_filename: &str,
+) -> Result<Response, (StatusCode, Json<ApiResponse<()>>)> {
+    let pdf_bytes = generate_pandoc_pdf_bytes(markdown, output_filename)
+        .await
+        .map_err(|(status, msg)| {
+            (
+                status,
+                Json(ApiResponse {
+                    success: false,
+                    message: Some(msg),
+                    data: None,
+                }),
+            )
+        })?;
 
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/pdf"));
@@ -198,10 +204,86 @@ async fn execute_pandoc_conversion(
         headers.insert(CONTENT_DISPOSITION, val);
     }
 
-    // Explicit early cleanup before returning stream
-    if temp_dir_path.exists() {
-        let _ = fs::remove_dir_all(&temp_dir_path).await;
+    Ok((headers, pdf_bytes).into_response())
+}
+
+pub async fn download_pandoc_ephemeral(
+    Path(token): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Response, (StatusCode, Json<ApiResponse<()>>)> {
+    let download = state.take_ephemeral_download(&token).await.ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse {
+                success: false,
+                message: Some("Download token is invalid or has expired".to_string()),
+                data: None,
+            }),
+        )
+    })?;
+
+    let mut headers = HeaderMap::new();
+    let content_type = if let Ok(val) = HeaderValue::from_str(&download.content_type) {
+        val
+    } else {
+        HeaderValue::from_static("application/pdf")
+    };
+    headers.insert(CONTENT_TYPE, content_type);
+
+    let safe_filename = download.filename.replace(['"', '\r', '\n'], "");
+    let disposition = format!("attachment; filename=\"{}\"", safe_filename);
+    if let Ok(val) = HeaderValue::from_str(&disposition) {
+        headers.insert(CONTENT_DISPOSITION, val);
     }
 
-    Ok((headers, pdf_bytes).into_response())
+    Ok((headers, download.data).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_download_pandoc_ephemeral_lifecycle() {
+        let state = AppState::new();
+        let pdf_data = b"%PDF-1.4 test pdf content".to_vec();
+        let token = state
+            .store_ephemeral_download(
+                pdf_data.clone(),
+                "test-report.pdf".to_string(),
+                "application/pdf".to_string(),
+                300,
+            )
+            .await;
+
+        // 1. First download succeeds
+        let res = download_pandoc_ephemeral(Path(token.clone()), State(state.clone())).await;
+        assert!(res.is_ok());
+        let response = res.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "application/pdf"
+        );
+        assert_eq!(
+            response.headers().get(CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"test-report.pdf\""
+        );
+
+        // 2. Second download with the same token fails (404 NOT FOUND, burn-after-reading)
+        let res2 = download_pandoc_ephemeral(Path(token.clone()), State(state.clone())).await;
+        assert!(res2.is_err());
+        let (status, body) = res2.unwrap_err();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body.0.success, false);
+
+        // 3. Nonexistent token returns 404
+        let res3 = download_pandoc_ephemeral(
+            Path("non-existent-token".to_string()),
+            State(state.clone()),
+        )
+        .await;
+        assert!(res3.is_err());
+        assert_eq!(res3.unwrap_err().0, StatusCode::NOT_FOUND);
+    }
 }
