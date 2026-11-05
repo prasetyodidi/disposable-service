@@ -162,6 +162,83 @@ ssh ubuntu@192.168.1.100 "cd /opt/disposable-service && docker compose down -v &
 
 ---
 
+## 🤖 Model Context Protocol (MCP) Integration
+
+Disposable Service Workspace exposes a remote [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server over HTTP Server-Sent Events (SSE). This enables AI agent environments—such as Claude Desktop, Cursor, and custom agent systems—to securely leverage isolated pandoc document compilation and read-only host telemetry without retaining sensitive data.
+
+### Protocol & Transport
+
+* **Transport:** HTTP Server-Sent Events (SSE)
+* **Handshake Stream:** `GET /api/mcp/sse` (establishes SSE stream and advertises session message endpoint)
+* **Message Dispatch:** `POST /api/mcp/message?sessionId=<SESSION_ID>` (JSON-RPC 2.0 transport)
+* **Protocol Version:** `2024-11-05`
+
+### Authentication
+
+All MCP endpoints enforce session authentication. Provide the instance JWT session token using the standard HTTP `Authorization` header:
+
+```http
+Authorization: Bearer <YOUR_JWT_SESSION_TOKEN>
+```
+
+> **Obtaining a token:** Tokens are issued when logging into the instance via `POST /api/auth/login` (or retrieved from your browser cookie/session). Tokens remain valid for 1 hour.
+
+### Client Configuration
+
+Configure your MCP-compatible client (such as Claude Desktop or Cursor) by adding the server definition:
+
+```json
+{
+  "mcpServers": {
+    "disposable-service": {
+      "url": "https://<YOUR-SERVER-DOMAIN-OR-IP>/api/mcp/sse",
+      "headers": {
+        "Authorization": "Bearer <YOUR_JWT_SESSION_TOKEN>"
+      }
+    }
+  }
+}
+```
+
+### Available Tools
+
+#### 1. `convert_markdown_to_pdf`
+Renders Markdown content into a clean PDF via Pandoc and LaTeX in a temporary sandbox.
+
+* **Parameters:**
+  * `markdown` (string, **required**): Raw Markdown text to convert.
+  * `filename` (string, *optional*, default: `document.pdf`): Target name for the compiled PDF.
+* **Output:**
+  Returns an ephemeral, one-time streaming download link:
+  ```text
+  Successfully generated PDF.
+  Filename: document.pdf
+  Download URL: /api/apps/pandoc/download/3fa85f64-5717-4562-b3fc-2c963f66afa6
+  Note: This is a one-time, burn-after-reading download link expiring in 5 minutes.
+  ```
+* **Zero-Retention Guarantee:**
+  * Pandoc compilation operates in an isolated temporary directory guarded by RAII drop cleanup.
+  * The compiled PDF binary is buffered in volatile RAM with a strict 5-minute time-to-live (TTL).
+  * **Burn-After-Reading:** As soon as the binary is streamed through the download endpoint, it is permanently deleted from memory.
+
+#### 2. `get_host_metrics`
+Retrieves a real-time, read-only snapshot of host resource usage and operating conditions.
+
+* **Parameters:** None.
+* **Output:** JSON object containing:
+  * **CPU:** Utilization percentage across physical cores.
+  * **Memory:** RAM total/used/free and Swap allocation.
+  * **Disks:** Mount points, total space, and disk usage percentages.
+  * **System:** Host uptime and top active processes sorted by CPU and memory consumption.
+
+### Security & Ephemeral Guarantees
+
+* **Zero Footprint:** No markdown documents, compiled PDFs, or telemetry snapshots are stored in persistent databases or non-volatile disks.
+* **Automatic Eviction:** Unread downloads automatically expire and purge after 5 minutes.
+* **Session Lifecycle:** Dropping the MCP SSE connection immediately triggers cleanup of associated channel state and background tasks.
+
+---
+
 ## 🎨 Airbnb Inspired Design Tokens
 
 Custom design tokens are integrated using Tailwind CSS v4 in `frontend/src/styles/global.css`:
