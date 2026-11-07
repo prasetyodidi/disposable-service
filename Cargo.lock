@@ -466,6 +466,7 @@ dependencies = [
  "async-stream",
  "axum",
  "axum-extra",
+ "base64",
  "chrono",
  "disposable-common",
  "jsonwebtoken",

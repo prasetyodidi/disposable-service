@@ -5,8 +5,10 @@ interface Session {
   session_id: string;
   ip_address: string;
   user_agent: string;
-  login_time: string;
-  expires_at: string;
+  login_time: number | string;
+  expires_at: number | string;
+  token_type?: string;
+  label?: string;
 }
 
 interface ActiveSessionsModalProps {
@@ -52,16 +54,20 @@ export const ActiveSessionsModal: React.FC<ActiveSessionsModalProps> = ({
 
   if (!isOpen) return null;
 
-  const parseUserAgent = (ua: string) => {
+  const parseUserAgent = (ua: string, tokenType?: string, label?: string) => {
+    if (tokenType === 'mcp_agent' || ua.startsWith('MCP Agent')) {
+      return { icon: <Shield size={16} className="text-rausch" />, label: label || 'MCP Agent' };
+    }
     if (/mobile/i.test(ua)) return { icon: <Smartphone size={16} />, label: 'Mobile Device' };
     return { icon: <Laptop size={16} />, label: 'Desktop / Browser' };
   };
 
-  const formatDate = (iso: string) => {
+  const formatDate = (val: number | string) => {
     try {
-      return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const d = typeof val === 'number' ? new Date(val * 1000) : new Date(val);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     } catch {
-      return iso;
+      return String(val);
     }
   };
 
@@ -120,7 +126,7 @@ export const ActiveSessionsModal: React.FC<ActiveSessionsModalProps> = ({
               </thead>
               <tbody className="divide-y divide-hairline-soft dark:divide-dark-hairline">
                 {sessions.map((s) => {
-                  const { icon, label } = parseUserAgent(s.user_agent);
+                  const { icon, label } = parseUserAgent(s.user_agent, s.token_type, s.label);
                   return (
                     <tr key={s.session_id} className="hover:bg-surface-soft/60 dark:hover:bg-dark-surface/60">
                       <td className="py-3 px-3">

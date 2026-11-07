@@ -233,12 +233,15 @@ mod tests {
 
         let state = AppState::new();
         let session_id = "test-session-monitor";
+        let now = Utc::now().timestamp();
         let session = SessionInfo {
             session_id: session_id.to_string(),
             ip_address: "127.0.0.1".to_string(),
             user_agent: "TestAgent".to_string(),
-            login_time: Utc::now(),
-            expires_at: Utc::now() + chrono::Duration::hours(1),
+            login_time: now,
+            expires_at: now + 3600,
+            token_type: None,
+            label: None,
         };
         state.add_session(session).await;
         let (token, _) = create_jwt(session_id, &state.jwt_secret).unwrap();

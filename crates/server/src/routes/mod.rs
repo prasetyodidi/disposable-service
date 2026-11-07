@@ -14,6 +14,7 @@ pub fn create_api_router() -> Router<AppState> {
         .route("/api/auth/setup", post(auth::setup_password))
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/logout", post(auth::logout))
+        .route("/api/auth/token", post(auth::create_token))
         .route("/api/sessions", get(auth::get_sessions))
         .route("/api/apps/pandoc/convert", post(pandoc::convert_pandoc_json))
         .route(

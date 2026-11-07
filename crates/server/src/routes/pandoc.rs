@@ -3,6 +3,8 @@ use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use base64::prelude::BASE64_STANDARD;
+use base64::Engine;
 use disposable_common::{ApiResponse, PandocConvertRequest};
 use std::path::PathBuf;
 use tokio::fs;
@@ -86,6 +88,27 @@ pub async fn convert_pandoc_multipart(
     execute_pandoc_conversion(&markdown_content, &original_filename).await
 }
 
+fn binary_available(bin: &str) -> bool {
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join(bin);
+            if candidate.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[allow(dead_code)]
+pub async fn generate_pdf_base64(
+    markdown: &str,
+    output_filename: &str,
+) -> Result<String, (StatusCode, String)> {
+    let bytes = generate_pandoc_pdf_bytes(markdown, output_filename).await?;
+    Ok(BASE64_STANDARD.encode(&bytes))
+}
+
 pub async fn generate_pandoc_pdf_bytes(
     markdown: &str,
     _output_filename: &str,
@@ -104,61 +127,162 @@ pub async fn generate_pandoc_pdf_bytes(
         path: temp_dir_path.clone(),
     };
 
-    let input_path = temp_dir_path.join("input.md");
+    let input_md_path = temp_dir_path.join("input.md");
+    let input_typ_path = temp_dir_path.join("input.typ");
     let output_path = temp_dir_path.join("output.pdf");
 
-    if let Err(e) = fs::write(&input_path, markdown).await {
+    if let Err(e) = fs::write(&input_md_path, markdown).await {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to write input markdown: {}", e),
         ));
     }
+    let _ = fs::write(&input_typ_path, markdown).await;
 
+    let doc_engine = std::env::var("DOC_ENGINE").unwrap_or_default().to_lowercase();
     let pdf_engine = std::env::var("PANDOC_PDF_ENGINE").unwrap_or_else(|_| "pdflatex".to_string());
     let pandoc_bin = std::env::var("PANDOC_BIN").unwrap_or_else(|_| "pandoc".to_string());
+    let typst_bin = std::env::var("TYPST_BIN").unwrap_or_else(|_| "typst".to_string());
 
-    // Execute Pandoc with parameters specified in PRD Req 4.3.2
-    let mut cmd = Command::new(&pandoc_bin);
-    cmd.arg(&input_path)
-        .arg("-o")
-        .arg(&output_path)
-        .arg(format!("--pdf-engine={}", pdf_engine))
-        .arg("-V")
-        .arg("papersize=a4")
-        .arg("-V")
-        .arg("geometry:top=1.8cm, bottom=1.8cm, left=2cm, right=2cm")
-        .arg("-V")
-        .arg("fontsize=10.5pt")
-        .arg("-V")
-        .arg("lineheight=1.25")
-        .arg("-V")
-        .arg("colorlinks=true")
-        .arg("-V")
-        .arg("linkcolor=navy");
+    let is_typst_engine = doc_engine == "typst" || pdf_engine == "typst";
+    let has_pandoc = binary_available(&pandoc_bin);
+    let has_typst = binary_available(&typst_bin);
 
-    // Optional font override
-    if let Ok(font) = std::env::var("PANDOC_MAIN_FONT") {
-        cmd.arg("-V").arg(format!("mainfont={}", font));
-    }
+    let output = if is_typst_engine && !has_pandoc && has_typst {
+        // Direct typst compile
+        let mut cmd = Command::new(&typst_bin);
+        cmd.current_dir(&temp_dir_path)
+            .env("HOME", &temp_dir_path)
+            .env("XDG_DATA_HOME", &temp_dir_path)
+            .env("XDG_CACHE_HOME", &temp_dir_path)
+            .arg("compile")
+            .arg(&input_typ_path)
+            .arg(&output_path);
+        cmd.output().await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to execute typst binary: {}", e),
+            )
+        })?
+    } else if is_typst_engine && has_pandoc {
+        // Pandoc with typst engine
+        let mut cmd = Command::new(&pandoc_bin);
+        cmd.current_dir(&temp_dir_path)
+            .env("HOME", &temp_dir_path)
+            .env("XDG_DATA_HOME", &temp_dir_path)
+            .env("XDG_CACHE_HOME", &temp_dir_path)
+            .arg(&input_md_path)
+            .arg("-o")
+            .arg(&output_path)
+            .arg("--pdf-engine=typst");
 
-    let output = match cmd.output().await {
-        Ok(out) => out,
-        Err(e) => {
-            return Err((
+        if let Ok(font) = std::env::var("PANDOC_MAIN_FONT") {
+            cmd.arg("-V").arg(format!("mainfont={}", font));
+        }
+
+        let pandoc_res = cmd.output().await;
+        let should_fallback = match &pandoc_res {
+            Ok(out) => !out.status.success() && has_typst,
+            Err(_) => has_typst,
+        };
+
+        if should_fallback {
+            // First convert markdown to typst format using pandoc -t typst if possible
+            let _ = Command::new(&pandoc_bin)
+                .current_dir(&temp_dir_path)
+                .env("HOME", &temp_dir_path)
+                .arg(&input_md_path)
+                .arg("-t")
+                .arg("typst")
+                .arg("-o")
+                .arg(&input_typ_path)
+                .output()
+                .await;
+
+            let mut typst_cmd = Command::new(&typst_bin);
+            typst_cmd
+                .current_dir(&temp_dir_path)
+                .env("HOME", &temp_dir_path)
+                .arg("compile")
+                .arg(&input_typ_path)
+                .arg(&output_path);
+            typst_cmd.output().await.map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to execute fallback typst binary: {}", e),
+                )
+            })?
+        } else {
+            pandoc_res.map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to execute pandoc with typst engine: {}", e),
+                )
+            })?
+        }
+    } else if has_pandoc {
+        // Pandoc with LaTeX (default)
+        let mut cmd = Command::new(&pandoc_bin);
+        cmd.current_dir(&temp_dir_path)
+            .env("HOME", &temp_dir_path)
+            .env("XDG_DATA_HOME", &temp_dir_path)
+            .env("XDG_CACHE_HOME", &temp_dir_path)
+            .arg(&input_md_path)
+            .arg("-o")
+            .arg(&output_path)
+            .arg(format!("--pdf-engine={}", pdf_engine))
+            .arg("-V")
+            .arg("papersize=a4")
+            .arg("-V")
+            .arg("geometry:top=1.8cm, bottom=1.8cm, left=2cm, right=2cm")
+            .arg("-V")
+            .arg("fontsize=10.5pt")
+            .arg("-V")
+            .arg("lineheight=1.25")
+            .arg("-V")
+            .arg("colorlinks=true")
+            .arg("-V")
+            .arg("linkcolor=navy");
+
+        if let Ok(font) = std::env::var("PANDOC_MAIN_FONT") {
+            cmd.arg("-V").arg(format!("mainfont={}", font));
+        }
+
+        cmd.output().await.map_err(|e| {
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!(
                     "Failed to execute pandoc binary (is pandoc installed?): {}",
                     e
                 ),
-            ));
-        }
+            )
+        })?
+    } else if has_typst {
+        // Fallback to typst if pandoc is missing
+        let mut cmd = Command::new(&typst_bin);
+        cmd.current_dir(&temp_dir_path)
+            .env("HOME", &temp_dir_path)
+            .arg("compile")
+            .arg(&input_typ_path)
+            .arg(&output_path);
+        cmd.output().await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to execute typst binary: {}", e),
+            )
+        })?
+    } else {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Neither pandoc nor typst binary is available on the host".to_string(),
+        ));
     };
 
     if !output.status.success() {
         let stderr_str = String::from_utf8_lossy(&output.stderr);
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("Pandoc conversion failed: {}", stderr_str),
+            format!("Document conversion failed: {}", stderr_str),
         ));
     }
 

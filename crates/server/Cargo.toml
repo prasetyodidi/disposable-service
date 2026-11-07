@@ -23,4 +23,5 @@ time = "0.3"
 sysinfo = "0.33"
 async-stream = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
+base64 = "0.22"
 

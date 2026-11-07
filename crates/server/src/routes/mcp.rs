@@ -11,10 +11,10 @@ use uuid::Uuid;
 use crate::auth::AuthenticatedSession;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct McpQuery {
-    #[serde(rename = "sessionId")]
-    pub session_id: String,
+    #[serde(rename = "sessionId", default)]
+    pub session_id: Option<String>,
 }
 
 /// SSE transport endpoint for MCP
@@ -154,7 +154,7 @@ pub async fn mcp_message_handler(
                 .unwrap_or("");
             let tool_args = call_params.and_then(|p| p.get("arguments"));
 
-            let (content_text, is_error) = match tool_name {
+            let (content_items, is_error) = match tool_name {
                 "convert_markdown_to_pdf" => {
                     let markdown = tool_args
                         .and_then(|a| a.get("markdown"))
@@ -163,7 +163,10 @@ pub async fn mcp_message_handler(
 
                     if markdown.trim().is_empty() {
                         (
-                            "Error: 'markdown' argument is required and cannot be empty".to_string(),
+                            vec![serde_json::json!({
+                                "type": "text",
+                                "text": "Error: 'markdown' argument is required and cannot be empty"
+                            })],
                             true,
                         )
                     } else {
@@ -179,6 +182,11 @@ pub async fn mcp_message_handler(
 
                         match crate::routes::pandoc::generate_pandoc_pdf_bytes(markdown, &pdf_filename).await {
                             Ok(pdf_bytes) => {
+                                use base64::prelude::BASE64_STANDARD;
+                                use base64::Engine;
+                                let base64_str = BASE64_STANDARD.encode(&pdf_bytes);
+                                let byte_len = pdf_bytes.len();
+
                                 let token = state
                                     .store_ephemeral_download(
                                         pdf_bytes,
@@ -189,13 +197,36 @@ pub async fn mcp_message_handler(
                                     .await;
                                 let download_url = format!("/api/apps/pandoc/download/{}", token);
                                 let msg = format!(
-                                    "Successfully generated PDF.\nFilename: {}\nDownload URL: {}\nNote: This is a one-time, burn-after-reading download link expiring in 5 minutes.",
-                                    pdf_filename, download_url
+                                    "Successfully generated PDF.\nFilename: {}\nSize: {} bytes\nDownload URL: {}\nNote: Embedded resource blob contains base64-encoded PDF. This is also available as a one-time, burn-after-reading download link expiring in 5 minutes.",
+                                    pdf_filename, byte_len, download_url
                                 );
-                                (msg, false)
+
+                                let items = vec![
+                                    serde_json::json!({
+                                        "type": "text",
+                                        "text": msg
+                                    }),
+                                    serde_json::json!({
+                                        "type": "resource",
+                                        "mimeType": "application/pdf",
+                                        "blob": base64_str,
+                                        "resource": {
+                                            "uri": format!("file:///{}", pdf_filename),
+                                            "mimeType": "application/pdf",
+                                            "blob": base64_str
+                                        }
+                                    }),
+                                ];
+                                (items, false)
                             }
                             Err((_status, err_msg)) => {
-                                (format!("Pandoc conversion failed: {}", err_msg), true)
+                                (
+                                    vec![serde_json::json!({
+                                        "type": "text",
+                                        "text": format!("Pandoc conversion failed: {}", err_msg)
+                                    })],
+                                    true,
+                                )
                             }
                         }
                     }
@@ -205,18 +236,25 @@ pub async fn mcp_message_handler(
                     let metrics = collector.collect();
                     let json_str = serde_json::to_string_pretty(&metrics)
                         .unwrap_or_else(|_| "{}".to_string());
-                    (json_str, false)
+                    (
+                        vec![serde_json::json!({
+                            "type": "text",
+                            "text": json_str
+                        })],
+                        false,
+                    )
                 }
-                unknown => (format!("Unknown tool: {}", unknown), true),
+                unknown => (
+                    vec![serde_json::json!({
+                        "type": "text",
+                        "text": format!("Unknown tool: {}", unknown)
+                    })],
+                    true,
+                ),
             };
 
             let result = serde_json::json!({
-                "content": [
-                    {
-                        "type": "text",
-                        "text": content_text
-                    }
-                ],
+                "content": content_items,
                 "isError": is_error
             });
 
@@ -238,21 +276,33 @@ pub async fn mcp_message_handler(
         }
     };
 
-    let response_str = serde_json::to_string(&rpc_response).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to serialize JSON-RPC response: {}", e),
-        )
-    })?;
+    // If an active SSE session exists, send the response through SSE event channel
+    if let Some(ref sid) = params.session_id {
+        let has_session = {
+            let lock = state.mcp_sessions.read().await;
+            lock.contains_key(sid)
+        };
+        if has_session {
+            let response_str = serde_json::to_string(&rpc_response).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to serialize JSON-RPC response: {}", e),
+                )
+            })?;
 
-    let sse_event = Event::default().event("message").data(response_str);
+            let sse_event = Event::default().event("message").data(response_str);
 
-    state
-        .send_mcp_message(&params.session_id, sse_event)
-        .await
-        .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+            state
+                .send_mcp_message(sid, sse_event)
+                .await
+                .map_err(|e| (StatusCode::NOT_FOUND, e))?;
 
-    Ok((StatusCode::ACCEPTED, "Accepted").into_response())
+            return Ok((StatusCode::ACCEPTED, "Accepted").into_response());
+        }
+    }
+
+    // Standalone single-flight HTTP POST: return JSON-RPC 2.0 response directly in HTTP response body
+    Ok((StatusCode::OK, Json(rpc_response)).into_response())
 }
 
 #[cfg(test)]
@@ -268,17 +318,20 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         state.add_mcp_session(session_id.clone(), tx).await;
 
+        let now = Utc::now().timestamp();
         let user_session = SessionInfo {
             session_id: "auth-session-1".to_string(),
             ip_address: "127.0.0.1".to_string(),
             user_agent: "TestAgent".to_string(),
-            login_time: Utc::now(),
-            expires_at: Utc::now() + chrono::Duration::hours(1),
+            login_time: now,
+            expires_at: now + 3600,
+            token_type: None,
+            label: None,
         };
 
         // 1. Test initialize
         let query = McpQuery {
-            session_id: session_id.clone(),
+            session_id: Some(session_id.clone()),
         };
         let init_req = serde_json::json!({
             "jsonrpc": "2.0",
@@ -307,7 +360,7 @@ mod tests {
 
         // 2. Test ping
         let ping_query = McpQuery {
-            session_id: session_id.clone(),
+            session_id: Some(session_id.clone()),
         };
         let ping_req = serde_json::json!({
             "jsonrpc": "2.0",
@@ -330,7 +383,7 @@ mod tests {
 
         // 3. Test notifications/initialized (no SSE message, 200 OK)
         let notif_query = McpQuery {
-            session_id: session_id.clone(),
+            session_id: Some(session_id.clone()),
         };
         let notif_req = serde_json::json!({
             "jsonrpc": "2.0",
@@ -356,17 +409,20 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         state.add_mcp_session(session_id.clone(), tx).await;
 
+        let now = Utc::now().timestamp();
         let user_session = SessionInfo {
             session_id: "auth-session-2".to_string(),
             ip_address: "127.0.0.1".to_string(),
             user_agent: "TestAgent".to_string(),
-            login_time: Utc::now(),
-            expires_at: Utc::now() + chrono::Duration::hours(1),
+            login_time: now,
+            expires_at: now + 3600,
+            token_type: None,
+            label: None,
         };
 
         // 1. Test tools/list
         let query = McpQuery {
-            session_id: session_id.clone(),
+            session_id: Some(session_id.clone()),
         };
         let list_req = serde_json::json!({
             "jsonrpc": "2.0",
@@ -390,7 +446,7 @@ mod tests {
 
         // 2. Test tools/call get_host_metrics
         let call_query = McpQuery {
-            session_id: session_id.clone(),
+            session_id: Some(session_id.clone()),
         };
         let call_req = serde_json::json!({
             "jsonrpc": "2.0",
@@ -424,16 +480,19 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         state.add_mcp_session(session_id.clone(), tx).await;
 
+        let now = Utc::now().timestamp();
         let user_session = SessionInfo {
             session_id: "auth-session-3".to_string(),
             ip_address: "127.0.0.1".to_string(),
             user_agent: "TestAgent".to_string(),
-            login_time: Utc::now(),
-            expires_at: Utc::now() + chrono::Duration::hours(1),
+            login_time: now,
+            expires_at: now + 3600,
+            token_type: None,
+            label: None,
         };
 
         let call_query = McpQuery {
-            session_id: session_id.clone(),
+            session_id: Some(session_id.clone()),
         };
         let call_req = serde_json::json!({
             "jsonrpc": "2.0",
@@ -493,12 +552,15 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_sse_handler_and_session_cleanup() {
         let state = AppState::new();
+        let now = Utc::now().timestamp();
         let user_session = SessionInfo {
             session_id: "auth-session-sse".to_string(),
             ip_address: "127.0.0.1".to_string(),
             user_agent: "TestAgent".to_string(),
-            login_time: Utc::now(),
-            expires_at: Utc::now() + chrono::Duration::hours(1),
+            login_time: now,
+            expires_at: now + 3600,
+            token_type: None,
+            label: None,
         };
 
         let sse = mcp_sse_handler(AuthenticatedSession(user_session), State(state.clone())).await;
@@ -527,5 +589,108 @@ mod tests {
 
         let count_after = state.mcp_sessions.read().await.len();
         assert_eq!(count_after, 0);
+    }
+
+    #[tokio::test]
+    async fn test_mcp_standalone_single_flight_http_post() {
+        let state = AppState::new();
+        let now = Utc::now().timestamp();
+        let user_session = SessionInfo {
+            session_id: "auth-session-single-flight".to_string(),
+            ip_address: "127.0.0.1".to_string(),
+            user_agent: "TestAgent".to_string(),
+            login_time: now,
+            expires_at: now + 3600,
+            token_type: Some("mcp_agent".to_string()),
+            label: Some("CLI Tool".to_string()),
+        };
+
+        // Standalone call without any sessionId
+        let query = McpQuery { session_id: None };
+        let init_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 100,
+            "method": "initialize",
+            "params": {}
+        });
+
+        let res = mcp_message_handler(
+            AuthenticatedSession(user_session.clone()),
+            State(state.clone()),
+            Query(query),
+            Json(init_req),
+        )
+        .await;
+
+        assert!(res.is_ok());
+        let response = res.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Convert body to bytes to verify direct JSON-RPC payload
+        use axum::body::to_bytes;
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body_json["jsonrpc"], "2.0");
+        assert_eq!(body_json["id"], 100);
+        assert_eq!(body_json["result"]["serverInfo"]["name"], "disposable-service");
+    }
+
+    #[tokio::test]
+    async fn test_mcp_single_flight_tool_call_pandoc_base64() {
+        let state = AppState::new();
+        let now = Utc::now().timestamp();
+        let user_session = SessionInfo {
+            session_id: "auth-session-base64".to_string(),
+            ip_address: "127.0.0.1".to_string(),
+            user_agent: "TestAgent".to_string(),
+            login_time: now,
+            expires_at: now + 3600,
+            token_type: Some("mcp_agent".to_string()),
+            label: Some("Agent".to_string()),
+        };
+
+        let query = McpQuery { session_id: None };
+        let call_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 101,
+            "method": "tools/call",
+            "params": {
+                "name": "convert_markdown_to_pdf",
+                "arguments": {
+                    "markdown": "# Header\n\nContent for single flight",
+                    "filename": "out.pdf"
+                }
+            }
+        });
+
+        let res = mcp_message_handler(
+            AuthenticatedSession(user_session),
+            State(state),
+            Query(query),
+            Json(call_req),
+        )
+        .await;
+
+        assert!(res.is_ok());
+        let response = res.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        use axum::body::to_bytes;
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body_json["jsonrpc"], "2.0");
+        assert_eq!(body_json["id"], 101);
+
+        let content = body_json["result"]["content"].as_array();
+        assert!(content.is_some());
+        let items = content.unwrap();
+        // If conversion succeeded (environment has LaTeX or Typst), verify resource blob
+        if items.len() >= 2 {
+            assert_eq!(items[0]["type"], "text");
+            assert_eq!(items[1]["type"], "resource");
+            assert_eq!(items[1]["mimeType"], "application/pdf");
+            assert!(items[1]["blob"].is_string());
+            assert!(!items[1]["blob"].as_str().unwrap().is_empty());
+        }
     }
 }

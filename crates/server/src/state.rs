@@ -29,8 +29,19 @@ impl AppState {
         let mut secret = vec![0u8; 64];
         rand::thread_rng().fill_bytes(&mut secret);
 
+        let initial_hash = std::env::var("DISPOSABLE_PASSWORD_HASH")
+            .ok()
+            .and_then(|h| {
+                let trimmed = h.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            });
+
         Self {
-            password_hash: Arc::new(RwLock::new(None)),
+            password_hash: Arc::new(RwLock::new(initial_hash)),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             jwt_secret: secret,
             downloads: Arc::new(RwLock::new(HashMap::new())),
@@ -54,14 +65,14 @@ impl AppState {
     pub async fn add_session(&self, session: SessionInfo) {
         let mut lock = self.sessions.write().await;
         // Purge expired sessions
-        let now = Utc::now();
+        let now = Utc::now().timestamp();
         lock.retain(|_, s| s.expires_at > now);
         lock.insert(session.session_id.clone(), session);
     }
 
     pub async fn get_session(&self, session_id: &str) -> Option<SessionInfo> {
         let mut lock = self.sessions.write().await;
-        let now = Utc::now();
+        let now = Utc::now().timestamp();
         if let Some(session) = lock.get(session_id) {
             if session.expires_at > now {
                 return Some(session.clone());
@@ -79,7 +90,7 @@ impl AppState {
 
     pub async fn list_sessions(&self) -> Vec<SessionInfo> {
         let mut lock = self.sessions.write().await;
-        let now = Utc::now();
+        let now = Utc::now().timestamp();
         lock.retain(|_, s| s.expires_at > now);
         let mut list: Vec<SessionInfo> = lock.values().cloned().collect();
         list.sort_by(|a, b| b.login_time.cmp(&a.login_time));
@@ -219,5 +230,21 @@ mod tests {
         let event2 = axum::response::sse::Event::default().data("test message 2");
         let send_res2 = state.send_mcp_message(&session_id, event2).await;
         assert!(send_res2.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_master_password_env_injection() {
+        let dummy_hash = "$argon2id$v=19$m=19456,t=2,p=1$dummyhashval";
+        std::env::set_var("DISPOSABLE_PASSWORD_HASH", dummy_hash);
+        let state = AppState::new();
+        assert!(state.is_claimed().await);
+
+        // Setting password again must fail
+        let res = state.set_password_hash("new_hash".to_string()).await;
+        assert!(res.is_err());
+
+        std::env::remove_var("DISPOSABLE_PASSWORD_HASH");
+        let fresh_state = AppState::new();
+        assert!(!fresh_state.is_claimed().await);
     }
 }

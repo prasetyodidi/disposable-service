@@ -6,7 +6,7 @@ use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::cookie::CookieJar;
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -42,10 +42,13 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
         .is_ok()
 }
 
-pub fn create_jwt(session_id: &str, secret: &[u8]) -> Result<(String, usize), String> {
+pub fn create_jwt_with_lifetime(
+    session_id: &str,
+    secret: &[u8],
+    lifetime_seconds: u64,
+) -> Result<(String, usize), String> {
     let now = Utc::now();
-    let expires = now + Duration::hours(1);
-    let exp = expires.timestamp() as usize;
+    let exp = (now.timestamp() + lifetime_seconds as i64) as usize;
     let iat = now.timestamp() as usize;
 
     let claims = Claims {
@@ -62,6 +65,10 @@ pub fn create_jwt(session_id: &str, secret: &[u8]) -> Result<(String, usize), St
     .map_err(|e| format!("Failed to encode JWT: {}", e))?;
 
     Ok((token, exp))
+}
+
+pub fn create_jwt(session_id: &str, secret: &[u8]) -> Result<(String, usize), String> {
+    create_jwt_with_lifetime(session_id, secret, 3600)
 }
 
 pub fn validate_jwt(token: &str, secret: &[u8]) -> Result<Claims, String> {
@@ -160,18 +167,28 @@ mod tests {
 
         let wrong_secret = b"wrong_secret_key_12345678901234567890";
         assert!(validate_jwt(&token, wrong_secret).is_err());
+
+        // Test custom lifetime
+        let (custom_token, exp) = create_jwt_with_lifetime(session_id, secret, 7200).unwrap();
+        let custom_claims = validate_jwt(&custom_token, secret).unwrap();
+        assert_eq!(custom_claims.sub, session_id);
+        assert_eq!(custom_claims.exp, exp);
+        assert!(custom_claims.exp >= custom_claims.iat + 7200);
     }
 
     #[tokio::test]
     async fn test_bearer_token_authentication_jwt() {
         let state = AppState::new();
         let session_id = "session-bearer-jwt-1";
+        let now = Utc::now().timestamp();
         let session = SessionInfo {
             session_id: session_id.to_string(),
             ip_address: "127.0.0.1".to_string(),
             user_agent: "TestAgent".to_string(),
-            login_time: Utc::now(),
-            expires_at: Utc::now() + Duration::hours(1),
+            login_time: now,
+            expires_at: now + 3600,
+            token_type: None,
+            label: None,
         };
         state.add_session(session).await;
 
@@ -203,12 +220,15 @@ mod tests {
     async fn test_bearer_token_authentication_direct_session_id() {
         let state = AppState::new();
         let session_id = "session-direct-token-999";
+        let now = Utc::now().timestamp();
         let session = SessionInfo {
             session_id: session_id.to_string(),
             ip_address: "127.0.0.1".to_string(),
             user_agent: "TestAgent".to_string(),
-            login_time: Utc::now(),
-            expires_at: Utc::now() + Duration::hours(1),
+            login_time: now,
+            expires_at: now + 3600,
+            token_type: None,
+            label: None,
         };
         state.add_session(session).await;
 
@@ -228,12 +248,15 @@ mod tests {
     async fn test_cookie_authentication() {
         let state = AppState::new();
         let session_id = "session-cookie-test-42";
+        let now = Utc::now().timestamp();
         let session = SessionInfo {
             session_id: session_id.to_string(),
             ip_address: "127.0.0.1".to_string(),
             user_agent: "TestAgent".to_string(),
-            login_time: Utc::now(),
-            expires_at: Utc::now() + Duration::hours(1),
+            login_time: now,
+            expires_at: now + 3600,
+            token_type: None,
+            label: None,
         };
         state.add_session(session).await;
 
