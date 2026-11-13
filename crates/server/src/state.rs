@@ -1,10 +1,18 @@
 use chrono::{DateTime, Duration, Utc};
-use disposable_common::SessionInfo;
+use crate::privacy::burn::BurnCoordinator;
+use disposable_common::{AuditReport, SessionInfo};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+/// Root directory for all temporary workspace files (e.g. pandoc jobs).
+/// Burn verification scans this directory.
+pub fn workspace_tmp_root() -> std::path::PathBuf {
+    std::env::temp_dir().join("disposable-workspace")
+}
 
 #[derive(Clone, Debug)]
 pub struct EphemeralDownload {
@@ -21,14 +29,12 @@ pub struct AppState {
     pub jwt_secret: Vec<u8>,
     pub downloads: Arc<RwLock<HashMap<String, EphemeralDownload>>>,
     pub mcp_sessions: Arc<RwLock<HashMap<String, Sender<axum::response::sse::Event>>>>,
+    pub burn: Arc<BurnCoordinator>,
+    pub ui_events: broadcast::Sender<Arc<AuditReport>>,
 }
 
 impl AppState {
     pub fn new() -> Self {
-        use rand::RngCore;
-        let mut secret = vec![0u8; 64];
-        rand::thread_rng().fill_bytes(&mut secret);
-
         let initial_hash = std::env::var("DISPOSABLE_PASSWORD_HASH")
             .ok()
             .and_then(|h| {
@@ -40,12 +46,50 @@ impl AppState {
                 }
             });
 
+        let jwt_secret: Vec<u8> = if let Ok(s) = std::env::var("JWT_SECRET") {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                trimmed.as_bytes().to_vec()
+            } else {
+                Self::derive_jwt_secret(&initial_hash)
+            }
+        } else {
+            Self::derive_jwt_secret(&initial_hash)
+        };
+
         Self {
             password_hash: Arc::new(RwLock::new(initial_hash)),
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            jwt_secret: secret,
+            jwt_secret,
             downloads: Arc::new(RwLock::new(HashMap::new())),
             mcp_sessions: Arc::new(RwLock::new(HashMap::new())),
+            burn: Arc::new(BurnCoordinator::new()),
+            ui_events: broadcast::channel(4).0,
+        }
+    }
+
+    fn derive_jwt_secret(initial_hash: &Option<String>) -> Vec<u8> {
+        if let Some(hash) = initial_hash {
+            use sha2::{Digest, Sha256};
+            let mut h1 = Sha256::new();
+            h1.update(b"disposable-service-salt-a:");
+            h1.update(hash.as_bytes());
+            let part1 = h1.finalize();
+
+            let mut h2 = Sha256::new();
+            h2.update(b"disposable-service-salt-b:");
+            h2.update(hash.as_bytes());
+            let part2 = h2.finalize();
+
+            let mut secret = Vec::with_capacity(64);
+            secret.extend_from_slice(&part1);
+            secret.extend_from_slice(&part2);
+            secret
+        } else {
+            use rand::RngCore;
+            let mut secret = vec![0u8; 64];
+            rand::thread_rng().fill_bytes(&mut secret);
+            secret
         }
     }
 
@@ -246,5 +290,24 @@ mod tests {
         std::env::remove_var("DISPOSABLE_PASSWORD_HASH");
         let fresh_state = AppState::new();
         assert!(!fresh_state.is_claimed().await);
+    }
+
+    #[tokio::test]
+    async fn test_deterministic_jwt_secret() {
+        // Test explicit JWT_SECRET
+        std::env::set_var("JWT_SECRET", "my_custom_lambda_secret_123");
+        let s1 = AppState::new();
+        let s2 = AppState::new();
+        assert_eq!(s1.jwt_secret, b"my_custom_lambda_secret_123");
+        assert_eq!(s1.jwt_secret, s2.jwt_secret);
+        std::env::remove_var("JWT_SECRET");
+
+        // Test hash-derived deterministic secret
+        std::env::set_var("DISPOSABLE_PASSWORD_HASH", "argon2hash_value_xyz");
+        let d1 = AppState::new();
+        let d2 = AppState::new();
+        assert_eq!(d1.jwt_secret.len(), 64);
+        assert_eq!(d1.jwt_secret, d2.jwt_secret);
+        std::env::remove_var("DISPOSABLE_PASSWORD_HASH");
     }
 }

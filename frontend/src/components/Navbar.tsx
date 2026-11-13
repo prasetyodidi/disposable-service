@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Layers, Shield, LogOut } from 'lucide-react';
 import { ActiveSessionsModal } from './ActiveSessionsModal';
 import { ThemeToggle } from './ThemeToggle';
+import { BurnButton } from './BurnButton';
 
 interface NavbarProps {
   currentPath?: string;
@@ -68,10 +69,31 @@ export const Navbar: React.FC<NavbarProps> = ({ currentPath = '/', onLogout }) =
           >
             Host Monitor
           </a>
+          <a
+            href="/scrubber"
+            className={`flex items-center h-full px-1 text-[15px] font-medium transition-colors relative ${
+              currentPath === '/scrubber'
+                ? 'text-ink dark:text-dark-ink font-semibold after:content-[""] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-ink dark:after:bg-dark-ink'
+                : 'text-muted dark:text-dark-muted hover:text-ink dark:hover:text-dark-ink'
+            }`}
+          >
+            Metadata Scrubber
+          </a>
+          <a
+            href="/redactor"
+            className={`flex items-center h-full px-1 text-[15px] font-medium transition-colors relative ${
+              currentPath === '/redactor'
+                ? 'text-ink dark:text-dark-ink font-semibold after:content-[""] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-ink dark:after:bg-dark-ink'
+                : 'text-muted dark:text-dark-muted hover:text-ink dark:hover:text-dark-ink'
+            }`}
+          >
+            Secret Redactor
+          </a>
         </nav>
 
         <div className="flex items-center gap-2 sm:gap-3">
           <ThemeToggle />
+          <BurnButton />
 
           <button
             className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-ink dark:text-dark-ink rounded-full hover:bg-surface-strong dark:hover:bg-dark-surface transition-colors cursor-pointer"

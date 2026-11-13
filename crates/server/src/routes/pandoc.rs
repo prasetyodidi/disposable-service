@@ -114,7 +114,7 @@ pub async fn generate_pandoc_pdf_bytes(
     _output_filename: &str,
 ) -> Result<Vec<u8>, (StatusCode, String)> {
     let job_id = Uuid::new_v4().to_string();
-    let temp_dir_path = std::env::temp_dir().join(format!("pandoc-job-{}", job_id));
+    let temp_dir_path = crate::state::workspace_tmp_root().join(format!("pandoc-job-{}", job_id));
 
     if let Err(e) = fs::create_dir_all(&temp_dir_path).await {
         return Err((

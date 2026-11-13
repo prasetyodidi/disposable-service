@@ -14,6 +14,8 @@ Styled with the **Airbnb Inspired Design System** using **Tailwind CSS v4** on t
 * **Active Sessions Monitor:** Real-time visibility of active sessions tracked by device, user-agent, and IP address.
 * **Automated CLI Control Plane:** Single-command deployment (`--existing`) over SSH to any target Linux server with automated SFTP transfer and Docker Compose orchestration.
 * **Pre-Built Docker Container:** Multi-stage image packaging the static Astro frontend, compiled Rust backend, Pandoc, and `pdflatex`.
+* **Privacy Micro-Apps:** Metadata Scrubber (JPEG/PNG/PDF), Secret Redactor, and JWT Inspector, all processed in memory with no third-party calls.
+* **Burn Workspace:** One-action emergency destruction that wipes in-memory storage, proves 0 bytes remain, and stops the server process.
 
 ---
 
@@ -231,11 +233,82 @@ Retrieves a real-time, read-only snapshot of host resource usage and operating c
   * **Disks:** Mount points, total space, and disk usage percentages.
   * **System:** Host uptime and top active processes sorted by CPU and memory consumption.
 
+#### 3. `redact_secrets`
+Masks secrets in text, `.env` content, and logs (same engine as `POST /api/apps/redactor`).
+
+* **Parameters:** text (1 to 1,048,576 characters), plus optional category toggles and custom words.
+* **Output:** Redacted text and replacement counts per category (0 for categories without matches).
+
+#### 4. `inspect_jwt`
+Decodes a JWT locally (same engine as `POST /api/apps/jwt`).
+
+* **Parameters:** `token` (string, 1 to 8,192 characters), optional HMAC secret and redaction option.
+* **Output:** Formatted header and payload, claim times in ISO 8601 UTC, token status, and warnings (e.g. `alg: none`).
+
+#### 5. `scrub_metadata`
+Strips sensitive metadata from a JPEG, PNG, or PDF.
+
+* **Parameters:** base64-encoded file (decoded size 1 byte to 25 MB).
+* **Output:** A one-time Ephemeral Download URL (`/api/apps/scrubber/download/:token`, 5-minute TTL) and the Scrub Report.
+
+#### 6. `burn_workspace_now`
+Permanently destroys the workspace. Cannot be undone.
+
+* **Parameters:** `confirm` (boolean, **required**, must be exactly `true`). Otherwise the call fails with JSON-RPC error `-32602` and nothing is deleted.
+* **Output:** The Burn Audit Report, after which the server process exits. See [Burn Workspace](#-privacy-micro-apps--burn-workspace).
+
 ### Security & Ephemeral Guarantees
 
 * **Zero Footprint:** No markdown documents, compiled PDFs, or telemetry snapshots are stored in persistent databases or non-volatile disks.
 * **Automatic Eviction:** Unread downloads automatically expire and purge after 5 minutes.
 * **Session Lifecycle:** Dropping the MCP SSE connection immediately triggers cleanup of associated channel state and background tasks.
+
+---
+
+## 🛡 Privacy Micro-Apps & Burn Workspace
+
+All routes below require an authenticated session (otherwise `401`). Nothing is persisted; user content never reaches server logs.
+
+### Micro-Apps
+
+| Micro-App | Page | Description |
+| :--- | :--- | :--- |
+| **Metadata Scrubber** | `/scrubber` | Removes GPS, device/lens serials, author, creator app, embedded thumbnails, XMP/IPTC from JPEG/PNG, and the Info dictionary + XMP stream from PDF. Pixels and PDF text are preserved. Max 25 MB. Returns a Scrub Report (categories and counts only, never values). |
+| **Secret Redactor** | `/redactor` (tab "Log & .env Redactor") | Replaces JWTs, bearer tokens, API keys, `.env` values, emails, phone numbers, IPv4/IPv6, credit cards, and custom words with `[REDACTED:<category>]`. Max 5 MB. |
+| **JWT Inspector** | `/redactor` (tab "JWT Inspector") | Decodes header/payload, converts `exp`/`iat`/`nbf` to ISO 8601, reports status, warns on `alg: none`, optionally verifies HS256/384/512 and redacts identity claims. Max 8,192 characters. |
+
+### API Routes
+
+| Method | Route | Purpose |
+| :--- | :--- | :--- |
+| `POST` | `/api/apps/scrubber` | Upload a file to scrub (`415` unsupported type, `422` corrupt/encrypted, `413` over 25 MB) |
+| `GET` | `/api/apps/scrubber/download/:token` | One-time download of a scrubbed file (5-minute TTL, burn-after-reading) |
+| `POST` | `/api/apps/redactor` | Redact secrets in text (`413` over 5 MB, `400` invalid custom words) |
+| `POST` | `/api/apps/jwt` | Inspect a JWT (`422` malformed token) |
+| `POST` | `/api/burn` | Trigger Burn Workspace and return the Audit Report |
+| `GET` | `/api/burn/events` | SSE stream; emits a `burn` event with the Audit Report when a burn starts (e.g. triggered via MCP) |
+
+### MCP Tools
+
+`redact_secrets`, `inspect_jwt`, `scrub_metadata`, and `burn_workspace_now` (see [Available Tools](#available-tools)).
+
+### Burn Workspace Behavior
+
+* **Trigger:** The Burn button in the Navbar (with a confirmation dialog, or a 3-second cancellable countdown in Demo mode), `POST /api/burn`, or the MCP tool `burn_workspace_now`.
+* **Managed_Storage scope:** `sessions`, `downloads`, and `mcp_sessions` in AppState, plus the workspace temporary directory. Download buffers are overwritten with zeros before being freed, MCP SSE connections are closed, and the auth cookie is cleared.
+* **0-byte audit:** The Audit Report lists entries and bytes per category before and after, duration, and a UTC timestamp. After re-verification, `verified: true` and `remaining_bytes: 0` mean 0 bytes remain; the UI shows "0 bytes remaining". If anything remains or verification is incomplete, `verified` is `false`. The scope is Managed_Storage only, not the whole process memory.
+* **Concurrency:** Concurrent burns run once and share one report. While burning, micro-app requests return `503`.
+* **Process exit:** After the report is sent, the server exits with code `0` (within 2 seconds, or 5 seconds if the client disconnects). If a normal exit fails, it is forced with a non-zero code.
+
+### Container Restart Policy (`RESTART_POLICY`)
+
+`deploy/docker-compose.yml` uses `restart: ${RESTART_POLICY:-on-failure}`. The default is `on-failure`, so the container stays stopped after a burn (exit code `0`). `no` behaves the same. With `unless-stopped` or `always`, Docker **restarts the container after a burn**, and the Audit Report includes a warning about it. Keep the default if you want the workspace to stay gone.
+
+```bash
+RESTART_POLICY=on-failure docker compose -f deploy/docker-compose.yml up -d
+```
+
+> The CLI `teardown` command is unchanged and does not use Burn Workspace.
 
 ---
 

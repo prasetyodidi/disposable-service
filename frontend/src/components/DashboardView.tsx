@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileText, ArrowRight, ShieldCheck, Cpu, HardDrive, Activity } from 'lucide-react';
+import { FileText, ArrowRight, ShieldCheck, Cpu, HardDrive, Activity, FileX, EyeOff } from 'lucide-react';
 import { Navbar } from './Navbar';
 
 export const DashboardView: React.FC = () => {
@@ -91,6 +91,78 @@ export const DashboardView: React.FC = () => {
                 className="w-full h-11 bg-ink dark:bg-dark-surface hover:bg-black dark:hover:bg-dark-surface-hover text-white dark:text-dark-ink border dark:border-dark-border text-sm font-semibold rounded-sm flex items-center justify-center gap-2 transition-colors no-underline cursor-pointer shadow-xs"
               >
                 <span>Open Monitor Panel</span>
+                <ArrowRight size={16} />
+              </a>
+            </div>
+          </div>
+
+          {/* Metadata Scrubber Card */}
+          <div className="bg-white dark:bg-dark-card rounded-md shadow-airbnb hover:shadow-airbnb-hover transition-all duration-200 p-6 flex flex-col justify-between border border-hairline-soft dark:border-dark-hairline group">
+            <div>
+              <div className="flex items-start justify-between mb-4">
+                <div className="w-12 h-12 rounded-sm bg-rose-50 dark:bg-rose-950/40 text-rausch flex items-center justify-center">
+                  <FileX size={24} />
+                </div>
+                <span className="bg-surface-strong dark:bg-dark-surface text-muted dark:text-dark-muted text-[11px] font-semibold px-2.5 py-1 rounded-full">
+                  App 3 • Privacy
+                </span>
+              </div>
+
+              <h2 className="text-lg font-bold text-ink dark:text-dark-ink mb-2 group-hover:text-rausch transition-colors">
+                Metadata Scrubber
+              </h2>
+              <p className="text-sm text-body dark:text-dark-body leading-relaxed mb-6">
+                Removes hidden metadata (EXIF, author, GPS) from images and documents entirely in memory before you share them.
+              </p>
+            </div>
+
+            <div>
+              <div className="pt-4 border-t border-hairline-soft dark:border-dark-hairline mb-5 flex items-center justify-between text-xs text-muted dark:text-dark-muted">
+                <span>Mode: in-memory</span>
+                <span>Retention: 0 seconds</span>
+              </div>
+
+              <a
+                href="/scrubber"
+                className="w-full h-11 bg-rausch hover:bg-rausch-active text-white text-sm font-semibold rounded-sm flex items-center justify-center gap-2 transition-colors no-underline cursor-pointer shadow-xs"
+              >
+                <span>Open Scrubber</span>
+                <ArrowRight size={16} />
+              </a>
+            </div>
+          </div>
+
+          {/* Secret Redactor Card */}
+          <div className="bg-white dark:bg-dark-card rounded-md shadow-airbnb hover:shadow-airbnb-hover transition-all duration-200 p-6 flex flex-col justify-between border border-hairline-soft dark:border-dark-hairline group">
+            <div>
+              <div className="flex items-start justify-between mb-4">
+                <div className="w-12 h-12 rounded-sm bg-rose-50 dark:bg-rose-950/40 text-rausch flex items-center justify-center">
+                  <EyeOff size={24} />
+                </div>
+                <span className="bg-surface-strong dark:bg-dark-surface text-muted dark:text-dark-muted text-[11px] font-semibold px-2.5 py-1 rounded-full">
+                  App 4 • Privacy
+                </span>
+              </div>
+
+              <h2 className="text-lg font-bold text-ink dark:text-dark-ink mb-2 group-hover:text-rausch transition-colors">
+                Secret Redactor
+              </h2>
+              <p className="text-sm text-body dark:text-dark-body leading-relaxed mb-6">
+                Inspects JWT tokens and masks secrets in logs locally, so sensitive values never leave the workspace.
+              </p>
+            </div>
+
+            <div>
+              <div className="pt-4 border-t border-hairline-soft dark:border-dark-hairline mb-5 flex items-center justify-between text-xs text-muted dark:text-dark-muted">
+                <span>Mode: local only</span>
+                <span>Retention: 0 seconds</span>
+              </div>
+
+              <a
+                href="/redactor"
+                className="w-full h-11 bg-rausch hover:bg-rausch-active text-white text-sm font-semibold rounded-sm flex items-center justify-center gap-2 transition-colors no-underline cursor-pointer shadow-xs"
+              >
+                <span>Open Redactor</span>
                 <ArrowRight size={16} />
               </a>
             </div>

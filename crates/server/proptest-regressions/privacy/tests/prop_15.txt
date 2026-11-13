@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3d12c522cec90fa2a77ba45a7dff50e0b9a9048e2df6ef22a5aab392799c82b9 # shrinks to env = EnvFile { text: "_=_\n", names: ["_"], non_empty_values: 1 }, opts = RedactOptions { categories: {Custom}, custom_words: ["\n"], format: Text }
+cc 2647dc7df757bb9f3f52aa7c106d45af3479f3f09e1f9baf4bf203e726c7c450 # shrinks to text = "\n", opts = RedactOptions { categories: {Custom}, custom_words: ["\n"], format: Text }

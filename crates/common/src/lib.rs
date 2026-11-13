@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthStatusResponse {
@@ -96,6 +97,127 @@ pub struct HostMetrics {
     pub disks: Vec<DiskMetric>,
     pub top_processes: Vec<ProcessMetric>,
     pub timestamp: i64,
+}
+
+// --- Scrubber ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScrubCategoryCount {
+    pub category: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScrubReport {
+    pub file_kind: String,
+    pub removed: Vec<ScrubCategoryCount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScrubEphemeralResponse {
+    pub token: String,
+    pub download_url: String,
+    pub filename: String,
+    pub report: ScrubReport,
+    pub expires_in_secs: u64,
+}
+
+// --- Redactor ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RedactRequest {
+    pub text: String,
+    #[serde(default)]
+    pub categories: Option<Vec<String>>,
+    #[serde(default)]
+    pub custom_words: Vec<String>,
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RedactResponse {
+    pub text: String,
+    pub counts: BTreeMap<String, usize>,
+}
+
+// --- JWT ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JwtInspectRequest {
+    pub token: String,
+    #[serde(default)]
+    pub secret: Option<String>,
+    #[serde(default)]
+    pub redact: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClaimTime {
+    pub claim: String,
+    pub raw: serde_json::Value,
+    pub iso: Option<String>,
+    pub valid: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenStatus {
+    Active,
+    Expired,
+    NotYetValid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SignatureCheck {
+    NotRequested,
+    Valid,
+    Invalid,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JwtInspectResult {
+    pub header: serde_json::Value,
+    pub payload: serde_json::Value,
+    pub header_pretty: String,
+    pub payload_pretty: String,
+    pub times: Vec<ClaimTime>,
+    pub status: TokenStatus,
+    pub signature: SignatureCheck,
+    pub warnings: Vec<String>,
+}
+
+// --- Burn ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CategoryStat {
+    pub category: String,
+    pub entries: u64,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FailedItem {
+    pub category: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AuditReport {
+    pub verified: bool,
+    pub incomplete: bool,
+    pub before: Vec<CategoryStat>,
+    pub after: Vec<CategoryStat>,
+    pub total_bytes_before: u64,
+    pub remaining_bytes: u64,
+    pub remaining_categories: Vec<CategoryStat>,
+    pub removed_items: u64,
+    pub failed_items: Vec<FailedItem>,
+    pub duration_ms: u64,
+    pub timestamp_utc: String,
+    pub warnings: Vec<String>,
 }
 
 #[cfg(test)]

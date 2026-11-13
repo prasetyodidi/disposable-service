@@ -16,6 +16,10 @@ Welcome to the **Disposable Service Workspace** repository. This document serves
   - **In-Memory Session Tracker:** Tracks active sessions by IP address and User-Agent (`/api/sessions`).
   - **Document Engine (`/api/apps/pandoc`):** Subprocess wrapper around `pandoc` + `pdflatex` with an RAII Drop guard (`TempDirGuard`) guaranteeing instant cleanup of all temporary files.
   - **Host Monitoring Service (`/api/apps/monitor`):** Real-time read-only host telemetry stream (CPU cores, RAM, swap, disks, top processes) via Server-Sent Events (`/api/apps/monitor/stream`).
+  - **Metadata Scrubber (`/api/apps/scrubber`):** In-memory removal of GPS, device serials, author, thumbnails, XMP/IPTC from JPEG/PNG and Info dictionary/XMP from PDF (25 MB max). Returns a Scrub Report (categories/counts only). Clean file via `GET /api/apps/scrubber/download/:token` (Ephemeral Download, 5-min TTL, burn-after-reading). Errors: 401, 413, 415, 422.
+  - **Secret Redactor (`POST /api/apps/redactor`):** Replaces JWTs, bearer tokens, API keys, `.env` values, emails, phones, IPs, credit cards, and custom words with `[REDACTED:<category>]` (5 MB max; idempotent; preserves line count).
+  - **JWT Inspector (`POST /api/apps/jwt`):** Local decode of header/payload, claim time conversion, `alg: none` warning, optional HS256/384/512 verification and identity-claim redaction (8,192 chars max).
+  - **Burn Workspace (`POST /api/burn`, `GET /api/burn/events`):** Emergency destruction (see Section 4.5).
   - **Static File Serving:** Serves compiled Astro frontend assets (`dist/`) directly on port 80.
 - **Frontend (`frontend/`):** Built with **Astro 5** + **React 19** (CSR / React Islands) styled using **Tailwind CSS v4** (`@tailwindcss/vite`) adhering to the **Airbnb Inspired Design System** (Rausch `#ff385c`, clean white canvas, ink text `#222222`, 1-tier subtle shadow).
 - **Deployment Packaging (`deploy/`):** Multi-stage `Dockerfile` and `docker-compose.yml`.
@@ -117,6 +121,38 @@ Then navigate to `http://localhost:8080`.
      - Corner rounding: `rounded-sm` (8px), `rounded-md` (14px), `rounded-full` (9999px).
 4. **CLI Remote Operations:**
    - The CLI embeds the compose file using `include_str!`. Keep `deploy/docker-compose.yml` self-contained and clean.
+5. **Privacy Logging Rule:**
+   - Never log file names, file contents, metadata values, redactor text, custom words, JWTs, payloads, or HMAC secrets (including error paths). Scrubber, Redactor, and JWT handlers must pass through the same auth extractor (401 when unauthenticated).
+
+### 4.5 Privacy Micro-Apps & Burn Workspace
+
+**API routes** (all registered in `create_api_router`, `crates/server/src/routes/mod.rs`):
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `POST` | `/api/apps/scrubber` | Scrub metadata from JPEG/PNG/PDF |
+| `GET` | `/api/apps/scrubber/download/:token` | One-time scrubbed file download |
+| `POST` | `/api/apps/redactor` | Redact secrets in text |
+| `POST` | `/api/apps/jwt` | Inspect a JWT |
+| `POST` | `/api/burn` | Trigger Burn Workspace, returns Audit Report |
+| `GET` | `/api/burn/events` | SSE `burn` event carrying the Audit Report |
+
+**Frontend pages:** `/scrubber` (Metadata Scrubber) and `/redactor` (tabs "JWT Inspector" and "Log & .env Redactor"), linked from Navbar and DashboardView. The Navbar shows the Burn button (confirmation dialog, or 3-second cancellable countdown in Demo mode), then an audit screen.
+
+**MCP tools** (alongside `convert_markdown_to_pdf` and `get_host_metrics`):
+- `redact_secrets`: same output as the redactor endpoint.
+- `inspect_jwt`: same output as the JWT endpoint.
+- `scrub_metadata`: base64 input, returns Ephemeral Download URL + Scrub Report.
+- `burn_workspace_now` ("Burn Workspace Now"): requires `confirm: true` (boolean). Otherwise JSON-RPC `-32602`; a burn already running returns an in-progress error; failure returns `-32603` and the process keeps running.
+
+**Burn Workspace behavior:**
+- **Managed_Storage scope:** `sessions`, `downloads`, `mcp_sessions` in `AppState` plus the workspace temp directory. Download buffers are zeroed before being freed, MCP SSE connections are closed, the JWT cookie is cleared.
+- **0-byte audit:** The Audit Report holds per-category entries/bytes before and after, duration (ms), and a UTC ISO 8601 timestamp, with no file names or user data. `verified: true` with `remaining_bytes: 0` is reported only after a successful re-verification (5 s limit); otherwise `verified: false`. Scope is Managed_Storage, not whole-process memory.
+- **Concurrency:** Concurrent burns execute once and share one report; micro-app requests return `503` during/after burn. Failed item deletions are listed and mark the report incomplete.
+- **Process exit:** After the report is sent the server exits with code `0` (2 s; 5 s if the client disconnects). A failed normal exit is forced with a non-zero code within 3 more seconds.
+- **`RESTART_POLICY`:** `deploy/docker-compose.yml` uses `restart: ${RESTART_POLICY:-on-failure}`. With `no` or `on-failure` (default) the container stays stopped after a burn. With `unless-stopped` or `always`, Docker restarts it and the Audit Report carries a warning.
+- The CLI `teardown` command must not call or depend on Burn Service.
+- Every new feature needs at least one success-path and one failure-path test run by `cargo test --workspace`.
 
 ---
 
@@ -305,6 +341,7 @@ These are set in `docker-compose.yml` and can be overridden at deploy-time:
 | `PANDOC_BIN` | `pandoc` | Path/name of the Pandoc binary |
 | `PANDOC_PDF_ENGINE` | `pdflatex` | LaTeX engine used by Pandoc for PDF output |
 | `DISPOSABLE_IMAGE` | _(from compose)_ | Override image reference at pull-time |
+| `RESTART_POLICY` | `on-failure` | Docker restart policy; `unless-stopped`/`always` restart the container after a burn |
 
 ---
 
