@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { HostMetrics } from '../types/monitor';
 
 export interface MetricHistoryPoint {
@@ -12,31 +12,30 @@ export function useServerMetrics(enabled: boolean = true) {
   const [history, setHistory] = useState<MetricHistoryPoint[]>([]);
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
     if (!enabled) {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-        setIsConnected(false);
-      }
+      setIsConnected(false);
       return;
     }
 
-    const es = new EventSource('/api/apps/monitor/stream');
-    eventSourceRef.current = es;
+    let isMounted = true;
 
-    es.onopen = () => {
-      setIsConnected(true);
-      setError(null);
-    };
-
-    es.onmessage = (event) => {
+    const fetchMetrics = async () => {
       try {
-        const data: HostMetrics = JSON.parse(event.data);
+        const res = await fetch('/api/apps/monitor', {
+          credentials: 'same-origin',
+        });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const json = await res.json();
+        const data: HostMetrics = (json && json.data) ? json.data : json;
+        if (!isMounted) return;
+
         setMetrics(data);
         setIsConnected(true);
+        setError(null);
 
         const memoryPct =
           data.memory_total_bytes > 0
@@ -50,19 +49,22 @@ export function useServerMetrics(enabled: boolean = true) {
           }
           return next;
         });
-      } catch (e) {
-        console.error('Failed to parse SSE metrics data', e);
+      } catch (err: any) {
+        if (!isMounted) return;
+        setIsConnected(false);
+        setError('Failed to fetch server metrics');
       }
     };
 
-    es.onerror = () => {
-      setIsConnected(false);
-      setError('Connection interrupted. Reconnecting...');
-    };
+    // Immediate initial fetch
+    fetchMetrics();
+
+    // Poll every 5 seconds
+    const intervalId = setInterval(fetchMetrics, 5000);
 
     return () => {
-      es.close();
-      eventSourceRef.current = null;
+      isMounted = false;
+      clearInterval(intervalId);
     };
   }, [enabled]);
 

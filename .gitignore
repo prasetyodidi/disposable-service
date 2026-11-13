@@ -8,4 +8,4 @@ dist/
 .env.*
 !.env.example
 ig/
-
+graphify-out

@@ -27,9 +27,20 @@ pub async fn get_auth_status(
 
     if let Some(cookie) = jar.get(COOKIE_NAME) {
         if let Ok(claims) = validate_jwt(cookie.value(), &state.jwt_secret) {
-            if state.get_session(&claims.sub).await.is_some() {
-                is_authenticated = true;
+            if state.get_session(&claims.sub).await.is_none() {
+                // Auto-hydrate session in fresh Lambda containers
+                let session = SessionInfo {
+                    session_id: claims.sub.clone(),
+                    ip_address: "127.0.0.1".to_string(),
+                    user_agent: "Browser / Device".to_string(),
+                    login_time: claims.iat as i64,
+                    expires_at: claims.exp as i64,
+                    token_type: None,
+                    label: None,
+                };
+                state.add_session(session).await;
             }
+            is_authenticated = true;
         }
     }
 

@@ -127,8 +127,33 @@ impl FromRequestParts<AppState> for AuthenticatedSession {
             if let Some(s) = state.get_session(&claims.sub).await {
                 Some(s)
             } else {
-                // If claims.sub session not found, also check direct session token
-                state.get_session(&token).await
+                // Auto-hydrate session in fresh Lambda containers
+                let ip_address = parts
+                    .headers
+                    .get("x-forwarded-for")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.split(',').next())
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| "127.0.0.1".to_string());
+
+                let user_agent = parts
+                    .headers
+                    .get(axum::http::header::USER_AGENT)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("Browser / Device")
+                    .to_string();
+
+                let hydrated = SessionInfo {
+                    session_id: claims.sub.clone(),
+                    ip_address,
+                    user_agent,
+                    login_time: claims.iat as i64,
+                    expires_at: claims.exp as i64,
+                    token_type: None,
+                    label: None,
+                };
+                state.add_session(hydrated.clone()).await;
+                Some(hydrated)
             }
         } else {
             // Also allow direct login session token if it matches a valid session in state
@@ -293,5 +318,32 @@ mod tests {
         let res = AuthenticatedSession::from_request_parts(&mut parts, &state).await;
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_auto_hydration_fresh_container() {
+        // State 1 creates a token
+        let state1 = AppState::new();
+        let session_id = "cross-container-session-777";
+        let (jwt, _) = create_jwt(session_id, &state1.jwt_secret).unwrap();
+
+        // State 2 shares the same jwt_secret but has empty sessions in RAM
+        let mut state2 = AppState::new();
+        state2.jwt_secret = state1.jwt_secret.clone();
+        assert!(state2.get_session(session_id).await.is_none());
+
+        let req = Request::builder()
+            .header("Authorization", format!("Bearer {}", jwt))
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+
+        // Authenticating against state2 should auto-hydrate and succeed!
+        let auth = AuthenticatedSession::from_request_parts(&mut parts, &state2).await;
+        assert!(auth.is_ok());
+        assert_eq!(auth.unwrap().0.session_id, session_id);
+
+        // Verify session was auto-hydrated into state2's RAM
+        assert!(state2.get_session(session_id).await.is_some());
     }
 }
