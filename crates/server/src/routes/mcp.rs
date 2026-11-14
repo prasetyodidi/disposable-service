@@ -577,7 +577,7 @@ pub async fn mcp_message_handler(
                 "tools": [
                     {
                         "name": "convert_markdown_to_pdf",
-                        "description": "Convert Markdown text to PDF using Pandoc with LaTeX formatting. Returns a one-time ephemeral download link.",
+                        "description": "Convert Markdown text to PDF using Pandoc (Typst or LaTeX engine, adjustable preset). Returns a one-time ephemeral download link.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -588,6 +588,19 @@ pub async fn mcp_message_handler(
                                 "filename": {
                                     "type": "string",
                                     "description": "Optional output filename for the PDF (default: document.pdf)"
+                                },
+                                "preset": {
+                                    "type": "object",
+                                    "description": "Optional Pandoc Preset Specs overrides. Unset fields use the server defaults (A4, margins 2cm/1.8cm, 10.5pt, line height 1.25, navy links).",
+                                    "properties": {
+                                        "paper_size": { "type": "string", "enum": ["a3", "a4", "a5", "letter", "legal"] },
+                                        "margin_x": { "type": "string", "description": "Left/right margin, e.g. 2cm (units: cm, mm, in, pt)" },
+                                        "margin_y": { "type": "string", "description": "Top/bottom margin, e.g. 1.8cm" },
+                                        "font_size": { "type": "string", "description": "6pt to 24pt, e.g. 10.5pt" },
+                                        "line_height": { "type": "number", "minimum": 1.0, "maximum": 2.5 },
+                                        "link_color": { "type": "string", "enum": ["navy", "black", "blue", "red", "green", "purple", "teal", "gray"] },
+                                        "main_font": { "type": "string", "description": "Font family name (letters, digits, spaces, hyphens)" }
+                                    }
                                 }
                             },
                             "required": ["markdown"]
@@ -742,7 +755,24 @@ pub async fn mcp_message_handler(
                             format!("{}.pdf", filename.trim_end_matches(".md"))
                         };
 
-                        match crate::routes::pandoc::generate_pandoc_pdf_bytes(markdown, &pdf_filename).await {
+                        let preset_result = match tool_args.and_then(|a| a.get("preset")) {
+                            Some(v) if !v.is_null() => {
+                                serde_json::from_value::<disposable_common::PandocPresetOverrides>(v.clone())
+                                    .map_err(|_| "'preset' must be an object with valid preset fields".to_string())
+                                    .and_then(|o| crate::routes::pandoc_preset::resolve(Some(&o)))
+                            }
+                            _ => crate::routes::pandoc_preset::resolve(None),
+                        };
+                        let gen_result = match preset_result {
+                            Ok(preset) => {
+                                crate::routes::pandoc::generate_pandoc_pdf_with_preset(markdown, &pdf_filename, &preset).await
+                            }
+                            Err(msg) => Err((
+                                axum::http::StatusCode::BAD_REQUEST,
+                                format!("invalid preset: {}", msg),
+                            )),
+                        };
+                        match gen_result {
                             Ok(pdf_bytes) => {
                                 use base64::prelude::BASE64_STANDARD;
                                 use base64::Engine;

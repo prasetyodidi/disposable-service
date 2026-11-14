@@ -5,6 +5,7 @@ pub mod redactor;
 pub mod mcp;
 pub mod monitor;
 pub mod pandoc;
+pub mod pandoc_preset;
 pub mod scrubber;
 
 use axum::middleware::from_fn_with_state;
@@ -22,6 +23,7 @@ pub fn create_api_router(state: AppState) -> Router<AppState> {
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/token", post(auth::create_token))
         .route("/api/sessions", get(auth::get_sessions))
+        .route("/api/apps/pandoc/preset", get(pandoc::get_pandoc_preset))
         .route("/api/apps/pandoc/convert", post(pandoc::convert_pandoc_json))
         .route(
             "/api/apps/pandoc/convert-upload",

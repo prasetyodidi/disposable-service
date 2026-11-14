@@ -55,6 +55,52 @@ pub struct ActiveSessionsResponse {
 pub struct PandocConvertRequest {
     pub markdown: String,
     pub filename: Option<String>,
+    /// Optional per-request overrides of the Pandoc Preset Specs.
+    #[serde(default)]
+    pub preset: Option<PandocPresetOverrides>,
+}
+
+/// Per-request overrides. Every field is optional; unset fields use the server default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PandocPresetOverrides {
+    #[serde(default)]
+    pub paper_size: Option<String>,
+    #[serde(default)]
+    pub margin_x: Option<String>,
+    #[serde(default)]
+    pub margin_y: Option<String>,
+    #[serde(default)]
+    pub font_size: Option<String>,
+    #[serde(default)]
+    pub line_height: Option<f64>,
+    #[serde(default)]
+    pub link_color: Option<String>,
+    #[serde(default)]
+    pub main_font: Option<String>,
+}
+
+/// Fully resolved preset values.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PandocPresetValues {
+    pub paper_size: String,
+    pub margin_x: String,
+    pub margin_y: String,
+    pub font_size: String,
+    pub line_height: f64,
+    pub link_color: String,
+    pub main_font: Option<String>,
+}
+
+/// Response of `GET /api/apps/pandoc/preset`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PandocPresetInfo {
+    /// Active engine: `typst` or the LaTeX engine name (e.g. `pdflatex`).
+    pub engine: String,
+    pub defaults: PandocPresetValues,
+    pub paper_sizes: Vec<String>,
+    pub link_colors: Vec<String>,
+    /// Notes about how a parameter is mapped for the active engine.
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

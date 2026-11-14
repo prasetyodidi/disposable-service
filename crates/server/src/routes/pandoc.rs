@@ -5,7 +5,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
-use disposable_common::{ApiResponse, PandocConvertRequest};
+use disposable_common::{ApiResponse, PandocConvertRequest, PandocPresetOverrides, PandocPresetValues};
+use crate::routes::pandoc_preset;
 use std::path::PathBuf;
 use tokio::fs;
 use tokio::process::Command;
@@ -48,7 +49,28 @@ pub async fn convert_pandoc_json(
         format!("{}.pdf", filename.trim_end_matches(".md"))
     };
 
-    execute_pandoc_conversion(&req.markdown, &pdf_filename).await
+    let preset = resolve_preset(req.preset.as_ref())?;
+    execute_pandoc_conversion(&req.markdown, &pdf_filename, &preset).await
+}
+
+fn resolve_preset(
+    overrides: Option<&PandocPresetOverrides>,
+) -> Result<PandocPresetValues, (StatusCode, Json<ApiResponse<()>>)> {
+    pandoc_preset::resolve(overrides).map_err(|msg| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: Some(format!("Invalid preset: {}", msg)),
+                data: None,
+            }),
+        )
+    })
+}
+
+/// `GET /api/apps/pandoc/preset`: active engine, default Pandoc Preset Specs and allowed values.
+pub async fn get_pandoc_preset(_auth: AuthenticatedSession) -> impl IntoResponse {
+    Json(pandoc_preset::info())
 }
 
 pub async fn convert_pandoc_multipart(
@@ -57,6 +79,8 @@ pub async fn convert_pandoc_multipart(
 ) -> Result<Response, (StatusCode, Json<ApiResponse<()>>)> {
     let mut markdown_content = String::new();
     let mut original_filename = "document.pdf".to_string();
+    let mut preset_overrides: Option<PandocPresetOverrides> = None;
+    let mut preset_invalid = false;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
@@ -66,6 +90,15 @@ pub async fn convert_pandoc_multipart(
             }
             if let Ok(bytes) = field.bytes().await {
                 markdown_content = String::from_utf8_lossy(&bytes).to_string();
+            }
+        } else if name == "preset" {
+            if let Ok(text) = field.text().await {
+                if !text.trim().is_empty() {
+                    match serde_json::from_str::<PandocPresetOverrides>(&text) {
+                        Ok(o) => preset_overrides = Some(o),
+                        Err(_) => preset_invalid = true,
+                    }
+                }
             }
         } else if name == "markdown" {
             if let Ok(text) = field.text().await {
@@ -85,7 +118,18 @@ pub async fn convert_pandoc_multipart(
         ));
     }
 
-    execute_pandoc_conversion(&markdown_content, &original_filename).await
+    if preset_invalid {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: Some("Invalid preset: not a valid JSON object".to_string()),
+                data: None,
+            }),
+        ));
+    }
+    let preset = resolve_preset(preset_overrides.as_ref())?;
+    execute_pandoc_conversion(&markdown_content, &original_filename, &preset).await
 }
 
 fn binary_available(bin: &str) -> bool {
@@ -111,7 +155,16 @@ pub async fn generate_pdf_base64(
 
 pub async fn generate_pandoc_pdf_bytes(
     markdown: &str,
+    output_filename: &str,
+) -> Result<Vec<u8>, (StatusCode, String)> {
+    generate_pandoc_pdf_with_preset(markdown, output_filename, &pandoc_preset::default_values())
+        .await
+}
+
+pub async fn generate_pandoc_pdf_with_preset(
+    markdown: &str,
     _output_filename: &str,
+    preset: &PandocPresetValues,
 ) -> Result<Vec<u8>, (StatusCode, String)> {
     let job_id = Uuid::new_v4().to_string();
     let temp_dir_path = crate::state::workspace_tmp_root().join(format!("pandoc-job-{}", job_id));
@@ -138,6 +191,16 @@ pub async fn generate_pandoc_pdf_bytes(
         ));
     }
     let _ = fs::write(&input_typ_path, markdown).await;
+    let preset_meta_path = temp_dir_path.join("preset.json");
+    let preset_header_path = temp_dir_path.join("preset-header.typ");
+    if fs::write(&preset_meta_path, pandoc_preset::typst_metadata(preset)).await.is_err()
+        || fs::write(&preset_header_path, pandoc_preset::typst_header(preset)).await.is_err()
+    {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to write preset files".to_string(),
+        ));
+    }
 
     let doc_engine = std::env::var("DOC_ENGINE").unwrap_or_default().to_lowercase();
     let pdf_engine = std::env::var("PANDOC_PDF_ENGINE").unwrap_or_else(|_| "pdflatex".to_string());
@@ -174,11 +237,11 @@ pub async fn generate_pandoc_pdf_bytes(
             .arg(&input_md_path)
             .arg("-o")
             .arg(&output_path)
-            .arg("--pdf-engine=typst");
-
-        if let Ok(font) = std::env::var("PANDOC_MAIN_FONT") {
-            cmd.arg("-V").arg(format!("mainfont={}", font));
-        }
+            .arg("--pdf-engine=typst")
+            .arg("--metadata-file")
+            .arg(&preset_meta_path)
+            .arg("--include-in-header")
+            .arg(&preset_header_path);
 
         let pandoc_res = cmd.output().await;
         let should_fallback = match &pandoc_res {
@@ -194,6 +257,11 @@ pub async fn generate_pandoc_pdf_bytes(
                 .arg(&input_md_path)
                 .arg("-t")
                 .arg("typst")
+                .arg("-s")
+                .arg("--metadata-file")
+                .arg(&preset_meta_path)
+                .arg("--include-in-header")
+                .arg(&preset_header_path)
                 .arg("-o")
                 .arg(&input_typ_path)
                 .output()
@@ -231,22 +299,7 @@ pub async fn generate_pandoc_pdf_bytes(
             .arg("-o")
             .arg(&output_path)
             .arg(format!("--pdf-engine={}", pdf_engine))
-            .arg("-V")
-            .arg("papersize=a4")
-            .arg("-V")
-            .arg("geometry:top=1.8cm, bottom=1.8cm, left=2cm, right=2cm")
-            .arg("-V")
-            .arg("fontsize=10.5pt")
-            .arg("-V")
-            .arg("lineheight=1.25")
-            .arg("-V")
-            .arg("colorlinks=true")
-            .arg("-V")
-            .arg("linkcolor=navy");
-
-        if let Ok(font) = std::env::var("PANDOC_MAIN_FONT") {
-            cmd.arg("-V").arg(format!("mainfont={}", font));
-        }
+            .args(pandoc_preset::latex_args(preset));
 
         cmd.output().await.map_err(|e| {
             (
@@ -307,8 +360,9 @@ pub async fn generate_pandoc_pdf_bytes(
 async fn execute_pandoc_conversion(
     markdown: &str,
     output_filename: &str,
+    preset: &PandocPresetValues,
 ) -> Result<Response, (StatusCode, Json<ApiResponse<()>>)> {
-    let pdf_bytes = generate_pandoc_pdf_bytes(markdown, output_filename)
+    let pdf_bytes = generate_pandoc_pdf_with_preset(markdown, output_filename, preset)
         .await
         .map_err(|(status, msg)| {
             (

@@ -205,11 +205,12 @@ Configure your MCP-compatible client (such as Claude Desktop or Cursor) by addin
 ### Available Tools
 
 #### 1. `convert_markdown_to_pdf`
-Renders Markdown content into a clean PDF via Pandoc and LaTeX in a temporary sandbox.
+Renders Markdown content into a clean PDF via Pandoc (LaTeX in the Docker image, Typst in the Lambda image) in a temporary sandbox.
 
 * **Parameters:**
   * `markdown` (string, **required**): Raw Markdown text to convert.
   * `filename` (string, *optional*, default: `document.pdf`): Target name for the compiled PDF.
+  * `preset` (object, *optional*): Pandoc Preset Specs overrides (see below).
 * **Output:**
   Returns an ephemeral, one-time streaming download link:
   ```text
@@ -321,3 +322,23 @@ Custom design tokens are integrated using Tailwind CSS v4 in `frontend/src/style
 * **Typography:** `#222222` (Ink), `#6a6a6a` (Muted), Inter font family
 * **Elevation Shadow:** `rgba(0, 0, 0, 0.02) 0 0 0 1px, rgba(0, 0, 0, 0.04) 0 2px 6px, rgba(0, 0, 0, 0.1) 0 4px 8px`
 * **Border Radii:** `8px` (inputs & buttons), `14px` (cards & modals), `9999px` (pills & badges)
+
+
+## 📄 Pandoc Preset Specs
+
+The Markdown to PDF converter uses a preset that can be adjusted per request. The active engine is `typst` when `DOC_ENGINE=typst` (Lambda image) and the LaTeX engine from `PANDOC_PDF_ENGINE` (default `pdflatex`) otherwise.
+
+| Field | Default | Allowed values |
+| :--- | :--- | :--- |
+| `paper_size` | `a4` | `a3`, `a4`, `a5`, `letter`, `legal` |
+| `margin_x` (left/right) | `2cm` | number + `cm`/`mm`/`in`/`pt` (max 10cm, 100mm, 4in, 300pt) |
+| `margin_y` (top/bottom) | `1.8cm` | same as `margin_x` |
+| `font_size` | `10.5pt` | `6pt` to `24pt` |
+| `line_height` | `1.25` | `1.0` to `2.5` (Typst: paragraph leading = line height - 0.6 em) |
+| `link_color` | `navy` | `navy`, `black`, `blue`, `red`, `green`, `purple`, `teal`, `gray` |
+| `main_font` | `PANDOC_MAIN_FONT` or engine default | letters, digits, spaces, hyphens (max 64) |
+
+* `GET /api/apps/pandoc/preset`: returns the active engine, the defaults, and the allowed values. The web UI card "Pandoc Preset Specs" reads this and lets you edit the values for the next conversion.
+* `POST /api/apps/pandoc/convert`: JSON body accepts an optional `preset` object with any of the fields above.
+* `POST /api/apps/pandoc/convert-upload`: multipart accepts an optional `preset` field containing the same JSON.
+* An invalid value returns `400` with `Invalid preset: ...`. Values are validated before they reach Pandoc, so they cannot inject options.
