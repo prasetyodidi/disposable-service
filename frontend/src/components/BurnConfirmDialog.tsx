@@ -1,14 +1,16 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Flame } from 'lucide-react';
 
 interface BurnConfirmDialogProps {
-  onConfirm: () => void;
+  /** `demo` true: mulai hitung mundur 3 detik yang dapat dibatalkan, bukan kirim langsung. */
+  onConfirm: (demo: boolean) => void;
   onCancel: () => void;
 }
 
 /** Dialog Burn_Confirmation: tombol "Setuju" dan "Batal"; Escape = Batal. Dirender sinkron saat dibuka. */
 export const BurnConfirmDialog: React.FC<BurnConfirmDialogProps> = ({ onConfirm, onCancel }) => {
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const [demo, setDemo] = useState(false);
 
   useEffect(() => {
     cancelRef.current?.focus();
@@ -44,6 +46,18 @@ export const BurnConfirmDialog: React.FC<BurnConfirmDialogProps> = ({ onConfirm,
           Seluruh data memori akan dihapus dan container akan dimatikan. Tindakan ini permanen dan
           tidak dapat dibatalkan.
         </p>
+        <label className="flex items-start gap-2 mb-6 text-sm text-muted dark:text-dark-muted cursor-pointer">
+          <input
+            type="checkbox"
+            checked={demo}
+            onChange={(e) => setDemo(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            <span className="font-semibold text-ink dark:text-dark-ink">Demo mode</span>: mulai
+            hitung mundur 3 detik yang bisa dibatalkan, bukan langsung membakar.
+          </span>
+        </label>
         <div className="flex justify-end gap-3">
           <button
             ref={cancelRef}
@@ -55,7 +69,7 @@ export const BurnConfirmDialog: React.FC<BurnConfirmDialogProps> = ({ onConfirm,
           </button>
           <button
             type="button"
-            onClick={onConfirm}
+            onClick={() => onConfirm(demo)}
             className="px-4 py-2 rounded-sm text-sm font-semibold text-white bg-airbnb-error hover:opacity-90 transition-opacity"
           >
             Setuju

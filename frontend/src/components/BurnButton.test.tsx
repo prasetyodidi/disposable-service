@@ -100,8 +100,9 @@ describe('BurnButton Demo mode', () => {
   it('counts 3-2-1 then sends exactly one POST', async () => {
     fetchMock.mockResolvedValue(okResponse(makeReport()));
     render(<BurnButton />);
-    fireEvent.click(screen.getByLabelText('Demo mode'));
     fireEvent.click(burnBtn());
+    fireEvent.click(screen.getByLabelText(/Demo mode/));
+    fireEvent.click(screen.getByRole('button', { name: 'Setuju' }));
 
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(screen.getByText(/Burn dalam 3/)).toBeTruthy();
@@ -117,8 +118,9 @@ describe('BurnButton Demo mode', () => {
 
   it('Batal during countdown sends nothing', async () => {
     render(<BurnButton />);
-    fireEvent.click(screen.getByLabelText('Demo mode'));
     fireEvent.click(burnBtn());
+    fireEvent.click(screen.getByLabelText(/Demo mode/));
+    fireEvent.click(screen.getByRole('button', { name: 'Setuju' }));
     await flush(1000);
     fireEvent.click(screen.getByRole('button', { name: 'Batal' }));
     await flush(10_000);

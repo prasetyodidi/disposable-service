@@ -9,7 +9,6 @@ const DEMO_COUNTDOWN_SECONDS = 3;
 
 export const BurnButton: React.FC = () => {
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [demoMode, setDemoMode] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,18 +40,21 @@ export const BurnButton: React.FC = () => {
   const handleClick = () => {
     if (sending || countdown !== null) return;
     setError(null);
-    if (demoMode) setCountdown(DEMO_COUNTDOWN_SECONDS);
-    else setConfirmOpen(true);
+    setConfirmOpen(true);
   };
 
-  const confirm = useCallback(() => {
-    setConfirmOpen(false);
-    void sendBurn();
-  }, [sendBurn]);
+  const confirm = useCallback(
+    (demo: boolean) => {
+      setConfirmOpen(false);
+      if (demo) setCountdown(DEMO_COUNTDOWN_SECONDS);
+      else void sendBurn();
+    },
+    [sendBurn],
+  );
 
   const cancelConfirm = useCallback(() => setConfirmOpen(false), []);
 
-  // Hitung mundur Demo mode: 3, 2, 1, lalu kirim saat mencapai 0.
+  // Hitung mundur Demo mode (dipilih di dialog konfirmasi): 3, 2, 1, lalu kirim saat mencapai 0.
   useEffect(() => {
     if (countdown === null) return;
     if (countdown === 0) {
@@ -69,19 +71,9 @@ export const BurnButton: React.FC = () => {
   return (
     <>
       <div className="flex items-center gap-2">
-        <label className="flex items-center gap-1 text-xs text-muted dark:text-dark-muted cursor-pointer">
-          <input
-            type="checkbox"
-            checked={demoMode}
-            disabled={sending || countdown !== null}
-            onChange={(e) => setDemoMode(e.target.checked)}
-          />
-          Demo mode
-        </label>
-
         {countdown !== null ? (
           <div className="flex items-center gap-2" role="status" aria-live="assertive">
-            <span className="text-sm font-bold text-airbnb-error">Burn dalam {countdown}…</span>
+            <span className="text-sm font-bold text-airbnb-error whitespace-nowrap">Burn dalam {countdown}…</span>
             <button
               type="button"
               onClick={() => setCountdown(null)}
@@ -96,10 +88,10 @@ export const BurnButton: React.FC = () => {
             onClick={handleClick}
             disabled={sending}
             aria-label="Burn Workspace: hapus seluruh data dan matikan container"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-sm font-bold text-white bg-airbnb-error hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+            className="inline-flex items-center justify-center gap-1.5 h-10 min-w-10 px-3 rounded-sm text-sm font-bold text-white bg-airbnb-error hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
           >
             <Flame size={16} aria-hidden="true" />
-            <span>Burn Workspace</span>
+            <span className="hidden sm:inline">Burn Workspace</span>
           </button>
         )}
       </div>
