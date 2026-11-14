@@ -1,6 +1,7 @@
 import React from 'react';
 import { FileText, ArrowRight, ShieldCheck, Cpu, HardDrive, Activity, FileX, EyeOff } from 'lucide-react';
 import { PageShell } from './PageShell';
+import { McpTokensPanel } from './McpTokensPanel';
 
 export const DashboardView: React.FC = () => {
   return (
@@ -197,6 +198,7 @@ export const DashboardView: React.FC = () => {
             </div>
           </div>
         </div>
-      </PageShell>
+      <McpTokensPanel />
+    </PageShell>
   );
 };

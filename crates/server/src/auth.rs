@@ -21,6 +21,11 @@ pub struct Claims {
     pub sub: String, // session_id
     pub exp: usize,  // epoch seconds
     pub iat: usize,  // epoch seconds
+    /// Set for API tokens (`mcp_agent`) so a fresh container can restore the session type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 pub fn hash_password(password: &str) -> Result<String, String> {
@@ -47,26 +52,48 @@ pub fn create_jwt_with_lifetime(
     secret: &[u8],
     lifetime_seconds: u64,
 ) -> Result<(String, usize), String> {
+    create_jwt_with_claims(session_id, secret, lifetime_seconds, None, None)
+}
+/// Creates a long-lived MCP agent token; type and label are embedded in the JWT.
+pub fn create_agent_jwt(
+    session_id: &str,
+    secret: &[u8],
+    lifetime_seconds: u64,
+    label: Option<String>,
+) -> Result<(String, usize), String> {
+    create_jwt_with_claims(
+        session_id,
+        secret,
+        lifetime_seconds,
+        Some("mcp_agent".to_string()),
+        label,
+    )
+}
+fn create_jwt_with_claims(
+    session_id: &str,
+    secret: &[u8],
+    lifetime_seconds: u64,
+    token_type: Option<String>,
+    label: Option<String>,
+) -> Result<(String, usize), String> {
     let now = Utc::now();
     let exp = (now.timestamp() + lifetime_seconds as i64) as usize;
     let iat = now.timestamp() as usize;
-
     let claims = Claims {
         sub: session_id.to_string(),
         exp,
         iat,
+        token_type,
+        label,
     };
-
     let token = encode(
         &Header::default(),
         &claims,
         &EncodingKey::from_secret(secret),
     )
     .map_err(|e| format!("Failed to encode JWT: {}", e))?;
-
     Ok((token, exp))
 }
-
 pub fn create_jwt(session_id: &str, secret: &[u8]) -> Result<(String, usize), String> {
     create_jwt_with_lifetime(session_id, secret, 3600)
 }
@@ -143,14 +170,19 @@ impl FromRequestParts<AppState> for AuthenticatedSession {
                     .unwrap_or("Browser / Device")
                     .to_string();
 
+                let user_agent = match (&claims.token_type, &claims.label) {
+                    (Some(_), Some(lbl)) => format!("MCP Agent ({})", lbl),
+                    (Some(_), None) => "MCP Agent".to_string(),
+                    _ => user_agent,
+                };
                 let hydrated = SessionInfo {
                     session_id: claims.sub.clone(),
                     ip_address,
                     user_agent,
                     login_time: claims.iat as i64,
                     expires_at: claims.exp as i64,
-                    token_type: None,
-                    label: None,
+                    token_type: claims.token_type.clone(),
+                    label: claims.label.clone(),
                 };
                 state.add_session(hydrated.clone()).await;
                 Some(hydrated)
@@ -318,6 +350,27 @@ mod tests {
         let res = AuthenticatedSession::from_request_parts(&mut parts, &state).await;
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_agent_token_keeps_type_and_label_after_hydration() {
+        let state1 = AppState::new();
+        let (jwt, _) = create_agent_jwt("agent-sess-1", &state1.jwt_secret, 3600, Some("Kiro".to_string())).unwrap();
+        // A fresh container shares the secret but has no sessions in memory.
+        let mut state2 = AppState::new();
+        state2.jwt_secret = state1.jwt_secret.clone();
+        let mut parts = Request::builder()
+            .uri("/")
+            .header("authorization", format!("Bearer {}", jwt))
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        let AuthenticatedSession(session) =
+            AuthenticatedSession::from_request_parts(&mut parts, &state2).await.unwrap();
+        assert_eq!(session.token_type.as_deref(), Some("mcp_agent"));
+        assert_eq!(session.label.as_deref(), Some("Kiro"));
+        assert_eq!(state2.list_sessions().await.len(), 1);
     }
 
     #[tokio::test]

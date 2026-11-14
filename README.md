@@ -185,6 +185,10 @@ Authorization: Bearer <YOUR_JWT_SESSION_TOKEN>
 
 > **Obtaining a token:** Tokens are issued when logging into the instance via `POST /api/auth/login` (or retrieved from your browser cookie/session). Tokens remain valid for 1 hour.
 
+### Creating a token from the Dashboard
+
+Open the Dashboard and use the **MCP access tokens** panel: enter a label, pick a lifetime (1 to 365 days) and press **Create token**. The token is shown once, together with a ready-to-paste client configuration. The same operation is available as `POST /api/auth/token` with `{"lifetime_seconds": 2592000, "label": "Kiro"}` (label max 64 characters). Tokens cannot be revoked yet: they stay valid until they expire or `JWT_SECRET` changes, so use short lifetimes.
+
 ### Client Configuration
 
 Configure your MCP-compatible client (such as Claude Desktop or Cursor) by adding the server definition:

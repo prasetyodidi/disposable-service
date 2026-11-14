@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use uuid::Uuid;
 
 use crate::auth::{
-    create_jwt, create_jwt_with_lifetime, hash_password, validate_jwt, verify_password,
+    create_agent_jwt, create_jwt, hash_password, validate_jwt, verify_password,
     AuthenticatedSession, COOKIE_NAME,
 };
 use crate::state::AppState;
@@ -35,8 +35,8 @@ pub async fn get_auth_status(
                     user_agent: "Browser / Device".to_string(),
                     login_time: claims.iat as i64,
                     expires_at: claims.exp as i64,
-                    token_type: None,
-                    label: None,
+                    token_type: claims.token_type.clone(),
+                    label: claims.label.clone(),
                 };
                 state.add_session(session).await;
             }
@@ -262,7 +262,25 @@ pub async fn create_token(
     }
 
     let session_id = Uuid::new_v4().to_string();
-    let (token, _exp) = create_jwt_with_lifetime(&session_id, &state.jwt_secret, req.lifetime_seconds)
+    let label = match req.label.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(l) if l.chars().count() <= 64 && !l.chars().any(|c| c.is_control()) => {
+            Some(l.to_string())
+        }
+        Some(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse {
+                    success: false,
+                    message: Some(
+                        "label must be at most 64 characters without control characters".to_string(),
+                    ),
+                    data: None,
+                }),
+            ));
+        }
+    };
+    let (token, _exp) = create_agent_jwt(&session_id, &state.jwt_secret, req.lifetime_seconds, label.clone())
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -278,7 +296,6 @@ pub async fn create_token(
     let expires_at = now
         .checked_add(req.lifetime_seconds as i64)
         .unwrap_or(now + 3600);
-    let label = req.label.clone();
     let user_agent = match &label {
         Some(lbl) => format!("MCP Agent ({})", lbl),
         None => "MCP Agent".to_string(),
@@ -369,5 +386,39 @@ mod tests {
         if let Err((status, _)) = err_res {
             assert_eq!(status, StatusCode::BAD_REQUEST);
         }
+    }
+    #[tokio::test]
+    async fn test_create_token_rejects_bad_labels_and_trims_good_ones() {
+        let state = AppState::new();
+        let now = Utc::now().timestamp();
+        let auth = || {
+            AuthenticatedSession(SessionInfo {
+                session_id: "auth-label".to_string(),
+                ip_address: "127.0.0.1".to_string(),
+                user_agent: "Browser".to_string(),
+                login_time: now,
+                expires_at: now + 3600,
+                token_type: None,
+                label: None,
+            })
+        };
+        for bad in ["x".repeat(65), "line\nbreak".to_string()] {
+            let res = create_token(
+                auth(),
+                State(state.clone()),
+                Json(CreateTokenRequest { lifetime_seconds: 3600, label: Some(bad) }),
+            )
+            .await;
+            assert!(matches!(res, Err((StatusCode::BAD_REQUEST, _))));
+        }
+        let ok = create_token(
+            auth(),
+            State(state.clone()),
+            Json(CreateTokenRequest { lifetime_seconds: 3600, label: Some("  Kiro  ".to_string()) }),
+        )
+        .await;
+        assert!(ok.is_ok());
+        let labels: Vec<_> = state.list_sessions().await.into_iter().filter_map(|s| s.label).collect();
+        assert_eq!(labels, vec!["Kiro".to_string()]);
     }
 }
