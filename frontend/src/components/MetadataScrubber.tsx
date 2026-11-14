@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Upload, Download, CheckCircle2, AlertCircle, FileText, Trash2, ShieldCheck } from 'lucide-react';
-import { Navbar } from './Navbar';
+import { PageShell } from './PageShell';
 import { formatFileSize } from '../lib/formatFileSize';
 import { pickFirstFile } from '../lib/pickFirstFile';
 import type { ScrubReport } from '../types/privacy';
+import { PRIMARY_BUTTON } from '../lib/ui';
 
 const TIMEOUT_MS = 60_000;
 const GENERIC_ERROR = 'Scrubbing failed. The server did not respond or the connection was lost.';
@@ -100,10 +101,8 @@ export const MetadataScrubber: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-surface-soft dark:bg-dark-canvas flex flex-col transition-colors">
-      <Navbar currentPath="/scrubber" />
-
-      <main className="flex-1 max-w-3xl w-full mx-auto px-6 py-10">
+    <PageShell currentPath="/scrubber">
+      <div className="max-w-3xl">
         <div className="mb-8">
           <div className="flex items-center gap-2 text-xs font-semibold text-rausch uppercase tracking-wider mb-1">
             <ShieldCheck size={14} />
@@ -212,7 +211,7 @@ export const MetadataScrubber: React.FC = () => {
               type="button"
               onClick={handleScrub}
               disabled={!file || busy}
-              className="h-12 px-6 bg-rausch hover:bg-rausch-active disabled:bg-rausch-disabled text-white font-semibold text-sm rounded-sm flex items-center gap-2 cursor-pointer disabled:cursor-not-allowed transition-all shadow-xs"
+              className={PRIMARY_BUTTON}
             >
               <Download size={16} />
               <span>{busy ? 'Scrubbing...' : 'Scrub & Download'}</span>
@@ -246,7 +245,7 @@ export const MetadataScrubber: React.FC = () => {
             )}
           </div>
         )}
-      </main>
-    </div>
+      </div>
+      </PageShell>
   );
 };

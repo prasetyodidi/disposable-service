@@ -1,13 +1,10 @@
 import React from 'react';
 import { FileText, ArrowRight, ShieldCheck, Cpu, HardDrive, Activity, FileX, EyeOff } from 'lucide-react';
-import { Navbar } from './Navbar';
+import { PageShell } from './PageShell';
 
 export const DashboardView: React.FC = () => {
   return (
-    <div className="min-h-screen bg-surface-soft dark:bg-dark-canvas flex flex-col transition-colors">
-      <Navbar currentPath="/" />
-
-      <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-10">
+    <PageShell currentPath="/">
         {/* Hero banner */}
         <div className="mb-10">
           <div className="inline-flex items-center gap-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 text-xs font-semibold px-3 py-1 rounded-full mb-3 border border-emerald-200 dark:border-emerald-800">
@@ -200,7 +197,6 @@ export const DashboardView: React.FC = () => {
             </div>
           </div>
         </div>
-      </main>
-    </div>
+      </PageShell>
   );
 };

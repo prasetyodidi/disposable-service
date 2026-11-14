@@ -66,7 +66,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentPath = '/', onLogout }) =
   return (
     <>
       <header className="sticky top-0 z-50 bg-white dark:bg-dark-card border-b border-hairline-soft dark:border-dark-hairline transition-colors">
-        <div className="h-16 px-4 md:px-8 flex items-center justify-between gap-4">
+        <div className="h-16 max-w-6xl mx-auto px-4 sm:px-6 flex items-center justify-between gap-4">
           <a
             href="/"
             className="flex items-center gap-2.5 no-underline shrink-0"

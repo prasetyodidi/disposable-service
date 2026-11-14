@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AlertCircle, AlertTriangle, ShieldCheck } from 'lucide-react';
 import type { JwtInspectResult, SignatureCheck, TokenStatus } from '../types/privacy';
+import { PRIMARY_BUTTON } from '../lib/ui';
 
 const MAX_TOKEN_CHARS = 8192;
 const MAX_SECRET_BYTES = 1024;
@@ -156,7 +157,7 @@ export const JwtInspectorTab: React.FC = () => {
             type="button"
             onClick={handleInspect}
             disabled={busy || trimmedToken.length === 0}
-            className="h-12 px-6 bg-rausch hover:bg-rausch-active disabled:bg-rausch-disabled text-white font-semibold text-sm rounded-sm flex items-center gap-2 cursor-pointer disabled:cursor-not-allowed transition-all shadow-xs"
+            className={PRIMARY_BUTTON}
           >
             <ShieldCheck size={16} />
             <span>{busy ? 'Inspecting...' : 'Inspect token'}</span>

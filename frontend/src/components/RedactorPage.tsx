@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { EyeOff } from 'lucide-react';
-import { Navbar } from './Navbar';
+import { PageShell } from './PageShell';
 import { JwtInspectorTab } from './JwtInspectorTab';
 import { LogRedactorTab } from './LogRedactorTab';
 
@@ -31,10 +31,7 @@ export const RedactorPage: React.FC = () => {
   }, [clearAll]);
 
   return (
-    <div className="min-h-screen bg-surface-soft dark:bg-dark-canvas flex flex-col transition-colors">
-      <Navbar currentPath="/redactor" />
-
-      <main className="flex-1 max-w-5xl w-full mx-auto px-6 py-10">
+    <PageShell currentPath="/redactor">
         <div className="mb-8">
           <div className="flex items-center gap-2 text-xs font-semibold text-rausch uppercase tracking-wider mb-1">
             <EyeOff size={14} />
@@ -78,7 +75,6 @@ export const RedactorPage: React.FC = () => {
             <LogRedactorTab />
           </div>
         </div>
-      </main>
-    </div>
+      </PageShell>
   );
 };

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Check, Copy, EyeOff } from 'lucide-react';
 import { validateRedactorInput, REDACTOR_MAX_CHARS } from '../lib/validateRedactorInput';
+import { PRIMARY_BUTTON } from '../lib/ui';
 
 const GENERIC_ERROR = 'Redaction failed. The server did not respond or the connection was lost.';
 const COPY_ERROR = 'Copy failed. Select the result text and copy it manually.';
@@ -202,7 +203,7 @@ export const LogRedactorTab: React.FC = () => {
             type="button"
             onClick={handleRedact}
             disabled={busy || text.length === 0}
-            className="h-12 px-6 bg-rausch hover:bg-rausch-active disabled:bg-rausch-disabled text-white font-semibold text-sm rounded-sm flex items-center gap-2 cursor-pointer disabled:cursor-not-allowed transition-all shadow-xs"
+            className={PRIMARY_BUTTON}
           >
             <EyeOff size={16} />
             <span>{busy ? 'Redacting...' : 'Redact'}</span>

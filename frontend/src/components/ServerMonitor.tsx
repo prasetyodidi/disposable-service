@@ -10,7 +10,7 @@ import {
   Radio,
   Search,
 } from 'lucide-react';
-import { Navbar } from './Navbar';
+import { PageShell } from './PageShell';
 import { useServerMetrics } from '../hooks/useServerMetrics';
 
 function formatBytes(bytes: number): string {
@@ -41,10 +41,7 @@ export const ServerMonitor: React.FC = () => {
   );
 
   return (
-    <div className="min-h-screen bg-surface-soft dark:bg-dark-canvas flex flex-col transition-colors">
-      <Navbar currentPath="/monitor" />
-
-      <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-10">
+    <PageShell currentPath="/monitor">
         {/* Top Navigation & Status Bar */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
           <div>
@@ -381,7 +378,6 @@ export const ServerMonitor: React.FC = () => {
             </table>
           </div>
         </div>
-      </main>
-    </div>
+      </PageShell>
   );
 };
