@@ -556,7 +556,7 @@ pub async fn mcp_message_handler(
                 },
                 "serverInfo": {
                     "name": "disposable-service",
-                    "version": "1.2.0"
+                    "version": env!("CARGO_PKG_VERSION")
                 }
             });
             serde_json::json!({

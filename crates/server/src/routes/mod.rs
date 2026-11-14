@@ -34,7 +34,20 @@ pub fn create_api_router(state: AppState) -> Router<AppState> {
         .route("/api/apps/monitor", get(monitor::get_host_metrics))
         .route("/api/apps/monitor/metrics", get(monitor::get_host_metrics))
         .route("/api/apps/monitor/stream", get(monitor::stream_host_metrics))
-        .route("/api/mcp/sse", get(mcp::mcp_sse_handler))
+        // Legacy SSE transport (GET) plus Streamable HTTP style POST on the same URL,
+        // so clients configured with only the SSE URL do not get HTTP 405.
+        .route(
+            "/api/mcp/sse",
+            get(mcp::mcp_sse_handler).post(mcp::mcp_message_handler).layer(
+                axum::extract::DefaultBodyLimit::max(36 * 1024 * 1024),
+            ),
+        )
+        .route(
+            "/api/mcp",
+            post(mcp::mcp_message_handler).layer(axum::extract::DefaultBodyLimit::max(
+                36 * 1024 * 1024,
+            )),
+        )
         .route(
             "/api/mcp/message",
             post(mcp::mcp_message_handler).layer(axum::extract::DefaultBodyLimit::max(
