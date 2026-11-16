@@ -10,11 +10,12 @@ interface NavbarProps {
 }
 
 const NAV_LINKS = [
-  { href: '/', label: 'Dashboard' },
-  { href: '/pandoc', label: 'Pandoc PDF' },
-  { href: '/monitor', label: 'Host Monitor' },
-  { href: '/scrubber', label: 'Metadata Scrubber' },
-  { href: '/redactor', label: 'Secret Redactor' },
+  { href: '/', label: 'Dashboard', short: 'Dashboard' },
+  { href: '/pandoc', label: 'Pandoc PDF', short: 'Pandoc' },
+  { href: '/monitor', label: 'Host Monitor', short: 'Monitor' },
+  { href: '/scrubber', label: 'Metadata Scrubber', short: 'Scrubber' },
+  { href: '/redactor', label: 'Secret Redactor', short: 'Redactor' },
+  { href: '/pdf-to-markdown', label: 'PDF to Markdown', short: 'PDF → MD' },
 ] as const;
 
 const iconButton =
@@ -75,16 +76,17 @@ export const Navbar: React.FC<NavbarProps> = ({ currentPath = '/', onLogout }) =
             <span className="w-8 h-8 rounded-full bg-rausch text-white flex items-center justify-center">
               <Layers size={18} />
             </span>
-            <span className="text-ink dark:text-dark-ink tracking-tight font-semibold text-base hidden sm:inline">
+            <span className="text-ink dark:text-dark-ink tracking-tight font-semibold text-base hidden sm:inline lg:hidden xl:inline">
               Disposable Workspace
             </span>
           </a>
 
-          <nav aria-label="Primary" className="hidden lg:flex items-center gap-6 h-full">
+          <nav aria-label="Primary" className="hidden lg:flex items-center gap-4 xl:gap-6 h-full">
             {NAV_LINKS.map((l) => (
               <a
                 key={l.href}
                 href={l.href}
+                aria-label={l.label}
                 aria-current={currentPath === l.href ? 'page' : undefined}
                 className={`relative flex items-center h-full text-sm font-medium whitespace-nowrap transition-colors ${linkClass(l.href)} ${
                   currentPath === l.href
@@ -92,12 +94,13 @@ export const Navbar: React.FC<NavbarProps> = ({ currentPath = '/', onLogout }) =
                     : ''
                 }`}
               >
-                {l.label}
+                <span className="2xl:hidden">{l.short}</span>
+                <span className="hidden 2xl:inline">{l.label}</span>
               </a>
             ))}
           </nav>
 
-          <div className="flex items-center gap-1.5 sm:gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <ThemeToggle />
             <BurnButton />
             <div className="relative" ref={accountRef}>
@@ -163,6 +166,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentPath = '/', onLogout }) =
               <a
                 key={l.href}
                 href={l.href}
+                onClick={() => setMenuOpen(false)}
                 aria-current={currentPath === l.href ? 'page' : undefined}
                 className={`flex items-center h-11 px-2 text-[15px] rounded-sm ${linkClass(l.href)} ${
                   currentPath === l.href ? 'bg-surface-soft dark:bg-dark-surface' : ''

@@ -91,7 +91,7 @@ export const BurnButton: React.FC = () => {
             className="inline-flex items-center justify-center gap-1.5 h-10 min-w-10 px-3 rounded-sm text-sm font-bold text-white bg-airbnb-error hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
           >
             <Flame size={16} aria-hidden="true" />
-            <span className="hidden sm:inline">Burn Workspace</span>
+            <span className="hidden sm:inline whitespace-nowrap">Burn Workspace</span>
           </button>
         )}
       </div>
