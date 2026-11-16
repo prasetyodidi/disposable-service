@@ -6,6 +6,7 @@ pub mod mcp;
 pub mod monitor;
 pub mod pandoc;
 pub mod pandoc_preset;
+pub mod pdf_to_markdown;
 pub mod scrubber;
 
 use axum::middleware::from_fn_with_state;
@@ -62,6 +63,9 @@ pub fn create_api_router(state: AppState) -> Router<AppState> {
         .route("/api/burn", post(burn::post_burn))
         .route("/api/burn/events", get(burn::burn_events))
         .merge(scrubber::router())
-        // Outermost layer: gate runs before auth extraction and handlers.
+        .merge(pdf_to_markdown::router(&state))
+        // Gate runs before auth extraction and handlers.
         .layer(from_fn_with_state(state, burn::burn_gate))
+        // Outermost: normalizes PDF route responses (no-store, error body shape).
+        .layer(axum::middleware::from_fn(pdf_to_markdown::finalize_pdf_response))
 }

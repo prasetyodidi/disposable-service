@@ -1,8 +1,12 @@
 mod auth;
 #[allow(dead_code)]
+mod pdf2md;
+#[allow(dead_code)]
 mod privacy;
 mod routes;
 mod state;
+#[cfg(test)]
+mod test_support;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -27,8 +31,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let state = AppState::new();
+    // Invalid PDF_MD_* configuration must stop the process before the port opens.
+    let pdf_runtime = match crate::pdf2md::PdfRuntime::from_env() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("Konfigurasi PDF to Markdown tidak valid: {e}");
+            std::process::exit(2);
+        }
+    };
+    for w in &pdf_runtime.config.warnings {
+        tracing::warn!("{w}");
+    }
+
+    let state = AppState::new().with_pdf(pdf_runtime);
     let burn = state.burn.clone();
+
+    // Sweep expired ephemeral downloads (buffers are zeroed on removal).
+    {
+        let sweep_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                tick.tick().await;
+                sweep_state.purge_expired_downloads().await;
+            }
+        });
+    }
 
     // CORS configuration for local development
     let cors = CorsLayer::new()

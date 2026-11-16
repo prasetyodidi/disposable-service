@@ -266,9 +266,77 @@ pub struct AuditReport {
     pub warnings: Vec<String>,
 }
 
+// --- PDF to Markdown ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PdfConversionResult {
+    pub markdown: String,
+    pub pages: u32,
+    pub headings: u32,
+    pub warnings: Vec<String>,
+    /// UUID of the Ephemeral Download; only present when `?download=true` and conversion succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PdfLimits {
+    pub max_bytes: u64,
+    pub max_pages: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PdfApiError {
+    /// Always `false`.
+    pub success: bool,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PdfMcpResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub markdown: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
+    pub pages: u32,
+    pub headings: u32,
+    pub warnings: Vec<String>,
+    pub truncated: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_pdf_dto_serde() {
+        let r = PdfConversionResult {
+            markdown: "# A\n".into(),
+            pages: 1,
+            headings: 1,
+            warnings: vec![],
+            download_token: None,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("download_token"));
+        assert_eq!(serde_json::from_str::<PdfConversionResult>(&json).unwrap(), r);
+
+        let m = PdfMcpResult {
+            markdown: None,
+            preview: Some("p".into()),
+            download_url: Some("/u".into()),
+            pages: 2,
+            headings: 0,
+            warnings: vec![],
+            truncated: true,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("\"markdown\""));
+        assert_eq!(serde_json::from_str::<PdfMcpResult>(&json).unwrap(), m);
+    }
 
     #[test]
     fn test_host_metrics_serde_roundtrip() {

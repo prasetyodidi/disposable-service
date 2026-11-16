@@ -26,12 +26,20 @@ pub(crate) enum ToolOutcome {
     Content(Vec<serde_json::Value>, bool),
     /// JSON-RPC error object (`error.code` / `error.message`).
     RpcError { code: i32, message: String },
+    /// JSON-RPC error object with an additional `error.data` payload.
+    RpcErrorData {
+        code: i32,
+        message: String,
+        data: serde_json::Value,
+    },
 }
 
 /// JSON-RPC code for invalid arguments.
 pub(crate) const RPC_INVALID_PARAMS: i32 = -32602;
 /// JSON-RPC code for internal failures (e.g. burn failure).
 pub(crate) const RPC_INTERNAL_ERROR: i32 = -32603;
+/// JSON-RPC implementation-defined server error (document/engine failures).
+pub(crate) const RPC_SERVER_ERROR: i32 = -32000;
 
 impl ToolOutcome {
     /// -32602 error whose message names the offending argument.
@@ -115,6 +123,165 @@ fn opt_str_array(
             .map(Some)
             .ok_or_else(|| ToolOutcome::invalid_arg(name, "must be an array of strings")),
         Some(_) => Err(ToolOutcome::invalid_arg(name, "must be an array of strings")),
+    }
+}
+
+/// Optional integer argument with minimum 1, as `u32`.
+#[allow(dead_code)]
+fn opt_u32_min1(
+    map: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Result<Option<u32>, ToolOutcome> {
+    match map.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(n)) => match n.as_u64() {
+            Some(v) if v >= 1 && v <= u32::MAX as u64 => Ok(Some(v as u32)),
+            _ => Err(ToolOutcome::invalid_arg(name, "must be an integer greater than or equal to 1")),
+        },
+        Some(_) => Err(ToolOutcome::invalid_arg(name, "must be an integer greater than or equal to 1")),
+    }
+}
+
+/// Optional boolean argument.
+#[allow(dead_code)]
+fn opt_bool(
+    map: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Result<Option<bool>, ToolOutcome> {
+    match map.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(ToolOutcome::invalid_arg(name, "must be a boolean")),
+    }
+}
+
+/// Task 7.2: validate args, call `pdf2md::convert`, shape the result.
+///
+/// Nothing user-supplied (base64, options, converted text) is logged.
+async fn call_pdf_to_markdown(state: &AppState, args: Option<&serde_json::Value>) -> ToolOutcome {
+    use crate::pdf2md::config::DOWNLOAD_TTL_SECS;
+    use crate::pdf2md::convert::{convert, shape_mcp_result, ConvertInput};
+    use crate::pdf2md::error::ConvertError;
+    use base64::prelude::BASE64_STANDARD;
+    use base64::Engine;
+
+    const KNOWN: [&str; 5] = [
+        "file_base64",
+        "page_from",
+        "page_to",
+        "page_breaks",
+        "strip_headers_footers",
+    ];
+
+    let map = match args_object(args) {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    if let Some(unknown) = map.keys().find(|k| !KNOWN.contains(&k.as_str())) {
+        return ToolOutcome::invalid_arg(unknown, "is not a recognized argument");
+    }
+    let b64 = match req_str(&map, "file_base64") {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let page_from = match opt_u32_min1(&map, "page_from") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let page_to = match opt_u32_min1(&map, "page_to") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let page_breaks = match opt_bool(&map, "page_breaks") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let strip = match opt_bool(&map, "strip_headers_footers") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    if let (Some(f), Some(t)) = (page_from, page_to) {
+        if f > t {
+            return ToolOutcome::invalid_arg("page_from", "must be less than or equal to page_to");
+        }
+    }
+
+    let max_bytes = state.pdf.config.max_bytes;
+    let size_detail = format!("decoded size must be between 1 and {} bytes", max_bytes);
+    let b64 = b64.trim();
+    let max_encoded = (max_bytes.div_ceil(3) * 4) as usize;
+    if b64.len() > max_encoded {
+        return ToolOutcome::invalid_arg("file_base64", &size_detail);
+    }
+    let file = match BASE64_STANDARD.decode(b64) {
+        Ok(b) => b,
+        Err(_) => return ToolOutcome::invalid_arg("file_base64", "is not valid base64"),
+    };
+    if file.is_empty() || file.len() as u64 > max_bytes {
+        return ToolOutcome::invalid_arg("file_base64", &size_detail);
+    }
+
+    // Serialize the options and let `parse_options` validate them, like the REST path.
+    let mut opts = serde_json::Map::new();
+    if let Some(v) = page_from {
+        opts.insert("page_from".into(), v.into());
+    }
+    if let Some(v) = page_to {
+        opts.insert("page_to".into(), v.into());
+    }
+    if let Some(v) = page_breaks {
+        opts.insert("page_breaks".into(), v.into());
+    }
+    if let Some(v) = strip {
+        opts.insert("strip_headers_footers".into(), v.into());
+    }
+    let options_raw = match serde_json::to_vec(&serde_json::Value::Object(opts)) {
+        Ok(v) => v,
+        Err(_) => return ToolOutcome::internal("Terjadi kesalahan internal."),
+    };
+
+    let input = ConvertInput {
+        file,
+        options_raw: Some(options_raw),
+        extra_file_parts: 0,
+    };
+    let conversion = match convert(&state.pdf, input).await {
+        Ok(c) => c,
+        Err(ConvertError::Internal) => return ToolOutcome::internal(ConvertError::Internal.message()),
+        Err(e @ (ConvertError::BadOptions { .. } | ConvertError::BadRequest | ConvertError::FileRequired)) => {
+            return ToolOutcome::RpcError {
+                code: RPC_INVALID_PARAMS,
+                message: format!("Invalid params: {}", e.message()),
+            }
+        }
+        Err(e) => {
+            return ToolOutcome::RpcErrorData {
+                code: RPC_SERVER_ERROR,
+                message: e.message(),
+                data: serde_json::json!({ "code": e.code_str() }),
+            }
+        }
+    };
+
+    // Store the Ephemeral_Download only when the result is truncated.
+    let needs_download = conversion.markdown.chars().count() > crate::pdf2md::convert::MCP_INLINE_MAX_CHARS;
+    let url = if needs_download {
+        let token = state
+            .store_ephemeral_download(
+                conversion.markdown.clone().into_bytes(),
+                "document.md".to_string(),
+                "text/markdown; charset=utf-8".to_string(),
+                DOWNLOAD_TTL_SECS,
+            )
+            .await;
+        Some(format!("/api/apps/pdf-to-markdown/download/{}", token))
+    } else {
+        None
+    };
+    let result = shape_mcp_result(&conversion, || url);
+    match serde_json::to_string(&result) {
+        Ok(s) => ToolOutcome::text(s),
+        Err(_) => ToolOutcome::internal("Terjadi kesalahan internal."),
     }
 }
 
@@ -701,6 +868,38 @@ pub async fn mcp_message_handler(
                             },
                             "required": ["confirm"]
                         }
+                    },
+                    {
+                        "name": "pdf_to_markdown",
+                        "description": "Convert a text-layer PDF to Markdown in memory (no OCR, tables or images). Returns markdown, pages, headings and warnings; long results return a preview plus a one-time ephemeral download link (5 minutes).",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "file_base64": {
+                                    "type": "string",
+                                    "description": "Base64-encoded PDF content"
+                                },
+                                "page_from": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "First page to convert (1-based)"
+                                },
+                                "page_to": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "Last page to convert (1-based)"
+                                },
+                                "page_breaks": {
+                                    "type": "boolean",
+                                    "description": "Insert a page break marker between pages"
+                                },
+                                "strip_headers_footers": {
+                                    "type": "boolean",
+                                    "description": "Remove repeated headers and footers"
+                                }
+                            },
+                            "required": ["file_base64"]
+                        }
                     }
                 ]
             });
@@ -722,6 +921,7 @@ pub async fn mcp_message_handler(
                 "redact_secrets" => call_redact_secrets(&state, tool_args).await,
                 "inspect_jwt" => call_inspect_jwt(&state, tool_args).await,
                 "scrub_metadata" => call_scrub_metadata(&state, tool_args).await,
+                "pdf_to_markdown" => call_pdf_to_markdown(&state, tool_args).await,
                 "burn_workspace_now" => {
                     let (o, d) =
                         call_burn_workspace_now(&state, tool_args, params.session_id.as_deref()).await;
@@ -866,6 +1066,15 @@ pub async fn mcp_message_handler(
                     "error": {
                         "code": code,
                         "message": message
+                    }
+                }),
+                ToolOutcome::RpcErrorData { code, message, data } => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": code,
+                        "message": message,
+                        "data": data
                     }
                 }),
             }

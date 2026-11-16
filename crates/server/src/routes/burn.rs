@@ -32,15 +32,16 @@ fn is_gated(path: &str) -> bool {
 pub async fn burn_gate(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let path = req.uri().path();
     if state.burn.is_burning() && !is_exempt(path) && is_gated(path) {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiResponse::<()> {
-                success: false,
-                message: Some("Workspace is being burned".to_string()),
-                data: None,
-            }),
-        )
-            .into_response();
+        let mut body = serde_json::to_value(ApiResponse::<()> {
+            success: false,
+            message: Some("Workspace is being burned".to_string()),
+            data: None,
+        })
+        .unwrap_or_else(|_| serde_json::json!({ "success": false }));
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("code".to_string(), serde_json::json!("burn_in_progress"));
+        }
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response();
     }
     next.run(req).await
 }

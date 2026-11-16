@@ -38,10 +38,11 @@ async fn tools_list_has_new_tools_and_keeps_old_ones() {
         "burn_workspace_now",
         "convert_markdown_to_pdf",
         "get_host_metrics",
+        "pdf_to_markdown",
     ] {
         assert!(names.contains(&n), "missing tool {n}");
     }
-    assert_eq!(names.len(), 6);
+    assert_eq!(names.len(), 7);
 
     // Old tools keep their original schema.
     let pdf = tools.iter().find(|t| t["name"] == "convert_markdown_to_pdf").unwrap();

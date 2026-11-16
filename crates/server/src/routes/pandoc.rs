@@ -161,13 +161,32 @@ pub async fn generate_pandoc_pdf_bytes(
         .await
 }
 
+/// Same as [`generate_pandoc_pdf_bytes`] but the job directory is created under `job_root`
+/// instead of the shared `workspace_tmp_root()`. Tests use it so a burn running concurrently
+/// in another test cannot wipe the job directory mid-conversion.
+#[cfg(test)]
+pub async fn generate_pandoc_pdf_bytes_in(
+    job_root: &std::path::Path,
+    markdown: &str,
+) -> Result<Vec<u8>, (StatusCode, String)> {
+    generate_pandoc_pdf_in(job_root, markdown, &pandoc_preset::default_values()).await
+}
+
 pub async fn generate_pandoc_pdf_with_preset(
     markdown: &str,
     _output_filename: &str,
     preset: &PandocPresetValues,
 ) -> Result<Vec<u8>, (StatusCode, String)> {
+    generate_pandoc_pdf_in(&crate::state::workspace_tmp_root(), markdown, preset).await
+}
+
+async fn generate_pandoc_pdf_in(
+    job_root: &std::path::Path,
+    markdown: &str,
+    preset: &PandocPresetValues,
+) -> Result<Vec<u8>, (StatusCode, String)> {
     let job_id = Uuid::new_v4().to_string();
-    let temp_dir_path = crate::state::workspace_tmp_root().join(format!("pandoc-job-{}", job_id));
+    let temp_dir_path = job_root.join(format!("pandoc-job-{}", job_id));
 
     if let Err(e) = fs::create_dir_all(&temp_dir_path).await {
         return Err((
