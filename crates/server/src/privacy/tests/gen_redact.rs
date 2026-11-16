@@ -144,7 +144,7 @@ pub(crate) fn api_key_secret() -> impl Strategy<Value = String> {
 }
 
 pub(crate) fn email_secret() -> impl Strategy<Value = String> {
-    proptest::string::string_regex("[a-z][a-z0-9._]{1,10}@[a-z][a-z0-9]{1,10}\\.(com|org|io|net)")
+    proptest::string::string_regex("[a-z][a-z0-9_]{1,10}(\\.[a-z]{1,4})?@[a-z][a-z0-9]{1,10}\\.(com|org|io|net)")
         .unwrap()
 }
 
@@ -182,10 +182,29 @@ pub(crate) fn secret_of(cat: Category) -> BoxedStrategy<String> {
     }
 }
 
-/// Any text-detectable secret with its category.
+/// True when a rule of a category other than `own` alone would touch `text`.
+/// Random bodies can embed another category's secret (e.g. a JWT signature segment
+/// containing `sk-<16+ chars>`, a valid API key); such a secret is ambiguous input.
+fn detected_by_other_category(own: Category, text: &str) -> bool {
+    TEXT_CATEGORIES.iter().filter(|c| **c != own).any(|c| {
+        let opts = RedactOptions {
+            categories: [*c].into_iter().collect(),
+            custom_words: Vec::new(),
+            format: Format::Text,
+        };
+        crate::privacy::redactor::redact(text, &opts).text != text
+    })
+}
+
+/// Any text-detectable secret with its category. A secret never contains a match
+/// of another category, so "inactive category stays verbatim" is well defined.
 pub(crate) fn secret() -> impl Strategy<Value = Secret> {
     prop::sample::select(TEXT_CATEGORIES.to_vec()).prop_flat_map(|category| {
-        secret_of(category).prop_map(move |text| Secret { category, text })
+        secret_of(category)
+            .prop_filter("secret embeds another category's match", move |t| {
+                !detected_by_other_category(category, t)
+            })
+            .prop_map(move |text| Secret { category, text })
     })
 }
 
@@ -211,6 +230,30 @@ pub(crate) fn sentence_with_secrets(max_secrets: usize) -> impl Strategy<Value =
             for (s, idx) in inserts {
                 let pos = idx.index(tokens.len() + 1);
                 tokens.insert(pos, (s.text.clone(), Some(s.clone())));
+            }
+            // A card may be grouped by a single space or dash, so a card next to a
+            // token whose adjoining character is a digit is ambiguous: the digits of both
+            // can form one longer Luhn-valid card, and the redactor (by design) takes it.
+            // Keep a card apart from any such neighbour (card, phone, ipv4, ipv6, ...)
+            // with a filler word.
+            let is_card = |t: &(String, Option<Secret>)| {
+                matches!(&t.1, Some(s) if s.category == Category::CreditCard)
+            };
+            let ends_digit = |t: &(String, Option<Secret>)| {
+                t.0.chars().last().is_some_and(|c| c.is_ascii_digit())
+            };
+            let starts_digit = |t: &(String, Option<Secret>)| {
+                t.0.chars().next().is_some_and(|c| c.is_ascii_digit())
+            };
+            let mut i = 1;
+            while i < tokens.len() {
+                let clash = (is_card(&tokens[i - 1]) && starts_digit(&tokens[i]))
+                    || (is_card(&tokens[i]) && ends_digit(&tokens[i - 1]));
+                if clash {
+                    tokens.insert(i, (FILLER[0].to_string(), None));
+                    i += 1;
+                }
+                i += 1;
             }
             // Report secrets in textual order.
             for (_, s) in &tokens {

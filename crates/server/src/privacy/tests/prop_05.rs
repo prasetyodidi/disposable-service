@@ -46,11 +46,14 @@ fn temp_listing() -> BTreeSet<std::path::PathBuf> {
     }
     let mut out = BTreeSet::new();
     walk(&workspace_tmp_root(), &mut out);
-    // Sibling tests (pandoc jobs) legitimately create entries in the shared
+    // Sibling tests (pandoc and pdf2md jobs) legitimately create entries in the shared
     // root concurrently; only the scrubber's own writes are relevant here.
     out.retain(|p| {
         !p.components()
-            .any(|c| c.as_os_str().to_string_lossy().starts_with("pandoc-job-"))
+            .any(|c| {
+                let n = c.as_os_str().to_string_lossy();
+                n.starts_with("pandoc-job-") || n.starts_with("pdf2md-job-")
+            })
     });
     out
 }
