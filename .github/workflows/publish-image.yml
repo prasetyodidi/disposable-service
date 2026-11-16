@@ -14,8 +14,14 @@ on:
       tag:
         description: "Custom tag (opsional, mis. v1.0.0)"
         required: false
+      skip_ci:
+        description: "Lewati CI sebelum publish. HANYA untuk keadaan darurat."
+        type: boolean
+        default: false
 
-# Wajib: izinkan workflow push package ke GHCR
+# Wajib: izinkan workflow push package ke GHCR.
+# ci.yml (reusable workflow) hanya membutuhkan `contents: read`, yaitu subset
+# izin pemanggil ini, sehingga panggilan valid. ci.yml tidak membutuhkan `secrets`.
 permissions:
   contents: read
   packages: write
@@ -25,8 +31,15 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/core-service
 
 jobs:
-  build-and-push:
-    name: Build & Push
+  ci:
+    name: CI
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.skip_ci) }}
+    uses: ./.github/workflows/ci.yml
+
+  # Hanya pada PR: pastikan image dapat dibangun (tanpa push/login), paralel dengan `ci`.
+  build-check:
+    name: Build Check
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -39,13 +52,43 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Build (tanpa push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-and-push:
+    name: Build & Push
+    needs: ci
+    if: ${{ always() && github.event_name != 'pull_request' && (needs.ci.result == 'success' || (needs.ci.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.skip_ci)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Warn that CI was skipped
+        if: ${{ inputs.skip_ci }}
+        run: |
+          echo "⚠️ CI skipped via skip_ci" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up QEMU (untuk multi-platform)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
         with:
           driver-opts: |
             image=moby/buildkit:latest
 
       - name: Log in to GHCR
-        # Hanya login bila bukan PR (PR tidak boleh push)
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -74,13 +117,14 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           # PENTING: context harus `.` (repo root), bukan ./deploy
           context: .
           file: ./deploy/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -89,7 +133,6 @@ jobs:
           sbom: true
 
       - name: Output image digest
-        if: github.event_name != 'pull_request'
         run: |
           echo "### Image published 🐳" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
