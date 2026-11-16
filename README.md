@@ -15,6 +15,7 @@ Styled with the **Airbnb Inspired Design System** using **Tailwind CSS v4** on t
 * **Automated CLI Control Plane:** Single-command deployment (`--existing`) over SSH to any target Linux server with automated SFTP transfer and Docker Compose orchestration.
 * **Pre-Built Docker Container:** Multi-stage image packaging the static Astro frontend, compiled Rust backend, Pandoc, and `pdflatex`.
 * **Privacy Micro-Apps:** Metadata Scrubber (JPEG/PNG/PDF), Secret Redactor, and JWT Inspector, all processed in memory with no third-party calls.
+* **PDF to Markdown:** Converts text-layer PDFs to Markdown in memory (page `/pdf-to-markdown`, MCP tool `pdf_to_markdown`). See [PDF to Markdown](#-pdf-to-markdown).
 * **Burn Workspace:** One-action emergency destruction that wipes in-memory storage, proves 0 bytes remain, and stops the server process.
 
 ---
@@ -256,6 +257,12 @@ Strips sensitive metadata from a JPEG, PNG, or PDF.
 * **Parameters:** base64-encoded file (decoded size 1 byte to 25 MB).
 * **Output:** A one-time Ephemeral Download URL (`/api/apps/scrubber/download/:token`, 5-minute TTL) and the Scrub Report.
 
+#### 5b. `pdf_to_markdown`
+Converts a text-layer PDF to Markdown.
+
+* **Parameters:** `file_base64` (required), `page_from`, `page_to` (integers ≥ 1), `page_breaks`, `strip_headers_footers` (booleans). Optional parameters use the same defaults as the REST route.
+* **Output:** `markdown`, `pages`, `headings`, `warnings`, identical to the REST response. If the Markdown exceeds 100,000 characters, the result holds an Ephemeral Download URL, a 2,000-character preview, and `truncated: true`.
+
 #### 6. `burn_workspace_now`
 Permanently destroys the workspace. Cannot be undone.
 
@@ -314,6 +321,112 @@ RESTART_POLICY=on-failure docker compose -f deploy/docker-compose.yml up -d
 ```
 
 > The CLI `teardown` command is unchanged and does not use Burn Workspace.
+
+---
+
+## 📑 PDF to Markdown
+
+Upload a PDF with a text layer on `/pdf-to-markdown` and get Markdown back: headings, paragraphs, lists, code blocks, bold/italic, with repeated headers/footers and page numbers removed. The PDF is processed in memory and in a temporary directory that is deleted right after the request. The document never leaves the workspace.
+
+### API Routes
+
+All routes require an authenticated session (`401` otherwise) and return `503` while a burn is running.
+
+| Method | Route | Purpose |
+| :--- | :--- | :--- |
+| `POST` | `/api/apps/pdf-to-markdown` | Multipart `file` plus optional `options` JSON (`page_from`, `page_to`, `page_breaks`, `strip_headers_footers`). Add `?download=true` to get a `download_token`. Errors: `400`, `413`, `415`, `422`, `504` |
+| `GET` | `/api/apps/pdf-to-markdown/download/:token` | One-time Markdown download (5-minute TTL, burn-after-reading) |
+| `GET` | `/api/apps/pdf-to-markdown/limits` | Effective `max_bytes` and `max_pages` |
+
+The MCP tool is `pdf_to_markdown` (see [Available Tools](#available-tools)).
+
+### Limits
+
+* **Upload size:** 25 MB (5 MB on the Lambda image).
+* **Pages:** 300 per document.
+* **Time:** 30 seconds per conversion.
+* **Response size:** unlimited on a regular server; 5,767,168 bytes on Lambda. Larger results return `422 output_too_large`; use `page_from`/`page_to`.
+
+### Phase 1 Scope and Limitations
+
+* Not supported: tables, OCR (scanned PDFs without a text layer), multi-column layouts, and image extraction.
+* Headings are detected by font size. A heading whose text is entirely bold renders as `# **Title**`, and headings distinguished only by bold (same size as body text) are not detected.
+* Hyphenated line ends: some typesetters (for example Typst with hyphenation enabled) break a word at the end of a line without keeping the hyphen glyph in the PDF text layer. Those words come out split in two in the Markdown, and no safe heuristic can rejoin them. PDFs whose text layer keeps the `-` are joined correctly.
+
+### Environment Variables
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `PDF_MD_ENGINE` | `poppler` | Extraction engine. Unknown values stop the server at startup before the port opens |
+| `PDF_MD_MAX_BYTES` | `26214400` (25 MB; `5242880` / 5 MB in the Lambda image) | Max upload size in bytes. Must be a positive integer; values above 25 MB are capped at 25 MB |
+| `PDF_MD_MAX_RESPONSE_BYTES` | unlimited (`5767168` in the Lambda image) | Max serialized JSON response size. Empty string counts as unset |
+
+### Licensing
+
+Extraction uses `pdftohtml` from poppler-utils (GPL). It runs only as a separate subprocess and is not linked into the Rust binary.
+
+---
+
+## 🧪 Running Poppler-Dependent Tests in Docker
+
+The PDF to Markdown tests need `pdftohtml` and `pdfinfo` (poppler-utils), plus Pandoc and Typst for the Markdown → PDF → Markdown round trip. `scripts/test-docker.sh` runs the workspace tests in a container (`deploy/Dockerfile.test`) that has all of them, so you do not have to install them on your machine.
+
+```bash
+# Run the whole workspace test suite
+scripts/test-docker.sh
+
+# Pass a test name filter through to cargo test
+scripts/test-docker.sh pdf2md
+
+# Open an interactive bash shell in the same container
+scripts/test-docker.sh --shell
+
+# Force a platform, e.g. when a tool is not available for your native architecture
+DOCKER_PLATFORM=linux/amd64 scripts/test-docker.sh pdf2md
+```
+
+* **First run:** The first build of the image and the first compile take several minutes. Later runs reuse the named volumes `disposable-cargo-registry` and `disposable-cargo-target`.
+* **`DOCKER_PLATFORM`:** Optional. When set, it is passed to `docker build` and `docker run` as `--platform`. By default the native architecture is used.
+* **Exit code:** The exit code of `cargo test` is returned unchanged.
+* **Plain `cargo test`:** Running `cargo test --workspace` on your machine still runs every test that does not need poppler. The remaining tests are skipped and print a `SKIP` message.
+* **Inside the container:** `PDF_MD_REQUIRE_TOOLS=1` is set, so a test that would be skipped because a tool is missing fails instead.
+
+---
+
+## 🤖 CI (GitHub Actions)
+
+`.github/workflows/ci.yml` runs two parallel jobs on `ubuntu-latest` (amd64 only):
+
+* **`backend`:** builds `deploy/Dockerfile.test` and runs `scripts/test-docker.sh`. The image sets `PDF_MD_REQUIRE_TOOLS=1`, so a poppler-dependent test that would be skipped fails instead.
+* **`frontend`:** in `frontend/`, runs `npm ci`, `npx tsc --noEmit`, `npm test` and `npm run build`.
+
+There is no clippy and no `cargo fmt --check` step.
+
+**`TEST_CACHE_DIR`:** an absolute path. When set, `scripts/test-docker.sh` bind-mounts `$TEST_CACHE_DIR/cargo-registry` and `$TEST_CACHE_DIR/cargo-target` instead of the named Docker volumes. CI sets it to `${{ runner.temp }}/test-cache` so `actions/cache` can save and restore the cargo registry and build output.
+
+**Run the same checks locally:**
+
+```bash
+# backend job
+scripts/test-docker.sh
+TEST_CACHE_DIR=/tmp/disposable-test-cache scripts/test-docker.sh   # same, with a host cache directory
+
+# frontend job
+cd frontend && npm ci && npx tsc --noEmit && npm test && npm run build
+```
+
+### Gating with `publish-image.yml`
+
+`publish-image.yml` calls `ci.yml` as job `ci`.
+
+* **Push to `main`, tag `v*.*.*`, `workflow_dispatch`:** `build-and-push` waits for `ci` to succeed.
+* **Pull request:** `ci` and `build-check` (builds the image without pushing) run in parallel. Nothing is pushed.
+
+**Emergency `skip_ci` input:** a manual `workflow_dispatch` run can set `skip_ci` to skip `ci` and still run `build-and-push`. The run summary then shows the warning "CI skipped via skip_ci". Only maintainers with write access can dispatch it, and it is meant for emergencies only.
+
+**Branch protection (manual step for the repository owner):** this is a repository setting and cannot be done from code. Protect `main` and require the status checks `ci / backend`, `ci / frontend` and `build-check`. Confirm the exact check names after the first run.
+
+**Re-running failures:** run `gh run rerun --failed <run-id>`, or click "Re-run failed jobs" in the GitHub UI, to re-run only the failed jobs. If a timing-sensitive or flaky test shows instability, loosen it through its environment variable.
 
 ---
 

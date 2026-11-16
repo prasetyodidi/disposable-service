@@ -102,6 +102,31 @@ cargo run -p disposable-server
 ```
 Then navigate to `http://localhost:8080`.
 
+### Running Poppler-Dependent Tests in Docker
+The PDF to Markdown tests need `pdftohtml`/`pdfinfo` (poppler-utils), Pandoc and Typst. `scripts/test-docker.sh` runs `cargo test --workspace` in a container built from `deploy/Dockerfile.test` that has them all:
+```bash
+scripts/test-docker.sh                 # whole workspace
+scripts/test-docker.sh pdf2md          # extra args (e.g. a name filter) go to cargo test
+scripts/test-docker.sh --shell         # interactive bash in the same container
+DOCKER_PLATFORM=linux/amd64 scripts/test-docker.sh pdf2md   # optional --platform for build and run
+```
+- The first run builds the image and compiles everything, which takes several minutes. The repo is bind-mounted at `/app`; named volumes `disposable-cargo-registry` and `disposable-cargo-target` keep dependencies and build output between runs.
+- The exit code of `cargo test` is passed through unchanged.
+- Plain local `cargo test --workspace` still runs every test that does not need poppler and skips the rest with a `SKIP` message.
+- The container sets `PDF_MD_REQUIRE_TOOLS=1`, so a test that would be skipped for a missing tool fails instead. Use this mode to confirm poppler-dependent tests really ran.
+
+### CI (GitHub Actions)
+- `.github/workflows/ci.yml` (triggers `workflow_dispatch` and `workflow_call` only) runs two parallel jobs on `ubuntu-latest`, amd64 only:
+  - `backend`: builds `deploy/Dockerfile.test` and runs `scripts/test-docker.sh`. Because the image sets `PDF_MD_REQUIRE_TOOLS=1`, a poppler-dependent test that would be skipped fails instead.
+  - `frontend`: in `frontend/`, runs `npm ci`, `npx tsc --noEmit`, `npm test`, `npm run build`.
+- There is no clippy and no `cargo fmt --check` step.
+- `TEST_CACHE_DIR` (absolute path): `scripts/test-docker.sh` bind-mounts `$TEST_CACHE_DIR/cargo-registry` and `$TEST_CACHE_DIR/cargo-target` instead of the named Docker volumes. CI points it at `${{ runner.temp }}/test-cache` so `actions/cache` can save and restore it.
+- Local equivalents: `scripts/test-docker.sh` (optionally with `TEST_CACHE_DIR=/tmp/disposable-test-cache`) for `backend`; `cd frontend && npm ci && npx tsc --noEmit && npm test && npm run build` for `frontend`.
+- Gating: `publish-image.yml` calls `ci.yml` as job `ci`. On push to `main`, tags `v*.*.*` and `workflow_dispatch`, `build-and-push` waits for `ci` to succeed. On pull requests, `ci` and `build-check` (image build without push) run in parallel, and nothing is pushed.
+- Emergency input `skip_ci` (`workflow_dispatch`): skips `ci` and still runs `build-and-push`, which writes a "CI skipped via skip_ci" warning to the run summary. Only maintainers with write access can dispatch it; use it only in emergencies.
+- Branch protection (manual repository setting, cannot be done from code): the repository owner should protect `main` with required status checks `ci / backend`, `ci / frontend` and `build-check`. Confirm the exact check names on the first run.
+- Re-run only failed jobs with `gh run rerun --failed <run-id>` or "Re-run failed jobs" in the UI. If a timing-sensitive or flaky test shows instability, loosen it through its environment variable.
+
 ---
 
 ## 4. Key Implementation Rules & Conventions
@@ -139,7 +164,26 @@ Then navigate to `http://localhost:8080`.
 
 **Frontend pages:** `/scrubber` (Metadata Scrubber) and `/redactor` (tabs "JWT Inspector" and "Log & .env Redactor"), linked from Navbar and DashboardView. The Navbar shows the Burn button (confirmation dialog, or 3-second cancellable countdown in Demo mode), then an audit screen.
 
+**PDF to Markdown mini app** (`/pdf-to-markdown`, code in `crates/server/src/pdf2md/`):
+- Converts a text-layer PDF to Markdown in memory. Extraction runs `pdftohtml -xml` (poppler-utils) as a subprocess and Rust heuristics build headings, paragraphs, lists, code blocks, bold/italic, and strip repeated headers/footers. Temp files use an RAII guard.
+- Routes (auth + Burn gate like other micro-apps: 401 unauthenticated, 503 during burn):
+
+  | Method | Route | Purpose |
+  |--------|-------|---------|
+  | `POST` | `/api/apps/pdf-to-markdown` | Multipart `file` (+ optional `options` JSON: `page_from`, `page_to`, `page_breaks`, `strip_headers_footers`); `?download=true` adds a `download_token` |
+  | `GET` | `/api/apps/pdf-to-markdown/download/:token` | One-time Markdown download (5-min TTL, burn-after-reading) |
+  | `GET` | `/api/apps/pdf-to-markdown/limits` | Effective `max_bytes` and `max_pages` |
+
+- Limits: 25 MB upload (5 MB on Lambda), 300 pages, 30 s conversion timeout. Errors: 400, 401, 413, 415, 422, 503, 504.
+- Phase 1 scope: no tables, OCR, multi-column layout, or image extraction.
+- Known limitation: a heading whose text is entirely bold renders as `# **Title**`. Headings distinguished only by bold (not larger font size) are not detected.
+- Known limitation: PDFs from typesetters that hyphenate words at line ends without keeping the hyphen glyph in the text layer (e.g. Typst with hyphenation enabled) come out with those words split in two in the Markdown. No safe heuristic can rejoin them. PDFs whose text layer keeps the `-` are joined.
+- License note: poppler is GPL. It is only executed as a separate subprocess (`pdftohtml`), never linked into the Rust binary.
+- Env vars `PDF_MD_ENGINE`, `PDF_MD_MAX_BYTES`, `PDF_MD_MAX_RESPONSE_BYTES`: see Section 5.7.
+- Tests needing poppler: see "Running Poppler-Dependent Tests in Docker" in Section 3.
+
 **MCP tools** (alongside `convert_markdown_to_pdf` and `get_host_metrics`):
+- `pdf_to_markdown`: `file_base64` (required) plus optional `page_from`, `page_to`, `page_breaks`, `strip_headers_footers`; returns the same `markdown`, `pages`, `headings`, `warnings` as the REST route. Markdown over 100,000 characters is returned as an Ephemeral Download URL with a 2,000-character preview and `truncated: true`.
 - `redact_secrets`: same output as the redactor endpoint.
 - `inspect_jwt`: same output as the JWT endpoint.
 - `scrub_metadata`: base64 input, returns Ephemeral Download URL + Scrub Report.
@@ -342,6 +386,9 @@ These are set in `docker-compose.yml` and can be overridden at deploy-time:
 | `PANDOC_PDF_ENGINE` | `pdflatex` | LaTeX engine used by Pandoc for PDF output |
 | `DISPOSABLE_IMAGE` | _(from compose)_ | Override image reference at pull-time |
 | `RESTART_POLICY` | `on-failure` | Docker restart policy; `unless-stopped`/`always` restart the container after a burn |
+| `PDF_MD_ENGINE` | `poppler` | Extraction engine for PDF to Markdown. Unknown values stop the server at startup before the port opens |
+| `PDF_MD_MAX_BYTES` | `26214400` (25 MB; `5242880` / 5 MB in the Lambda image) | Max PDF upload size in bytes. Must be a positive integer; values above 25 MB are capped at 25 MB; invalid values stop the server at startup |
+| `PDF_MD_MAX_RESPONSE_BYTES` | unlimited (`5767168` in the Lambda image) | Max serialized JSON response size; larger results return `422 output_too_large`. Empty string counts as unset |
 
 ---
 
