@@ -185,3 +185,40 @@ async fn second_burn_while_running_returns_in_progress_error() {
     assert_eq!(v["error"]["code"], -32603);
     assert_eq!(v["error"]["message"], "penghancuran sedang berlangsung");
 }
+
+/// The enums advertised in `tools/list` must match what the server accepts,
+/// otherwise agents pick values that the validation rejects (or miss valid ones).
+#[tokio::test]
+async fn redact_secrets_schema_enums_match_validation() {
+    use crate::privacy::redactor::{Category, Format};
+    let (app, _state, token) = authed_app().await;
+    let (_, _, body) = send(
+        &app,
+        post_json("/api/mcp/message", &token, &rpc(1, "tools/list", serde_json::json!({}))),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let tool = v["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "redact_secrets")
+        .unwrap()
+        .clone();
+    let props = &tool["inputSchema"]["properties"];
+    let cats: Vec<String> = props["categories"]["items"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap().to_string())
+        .collect();
+    let expected: Vec<String> = Category::ALL.iter().map(|c| c.as_str().to_string()).collect();
+    assert_eq!(cats, expected, "categories enum out of sync with Category::ALL");
+    for c in &cats {
+        assert!(Category::parse(c).is_some(), "{c} is advertised but not accepted");
+    }
+    for f in props["format"]["enum"].as_array().unwrap() {
+        assert!(Format::parse(f.as_str().unwrap()).is_some(), "format {f} not accepted");
+    }
+    assert!(Format::parse("log").is_none(), "sanity: `log` is not a format");
+}

@@ -167,32 +167,41 @@ ssh ubuntu@192.168.1.100 "cd /opt/disposable-service && docker compose down -v &
 
 ## 🤖 Model Context Protocol (MCP) Integration
 
-Disposable Service Workspace exposes a remote [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server over HTTP Server-Sent Events (SSE). This enables AI agent environments—such as Claude Desktop, Cursor, and custom agent systems—to securely leverage isolated pandoc document compilation and read-only host telemetry without retaining sensitive data.
+Disposable Service Workspace exposes a remote [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server. AI agent environments such as Kiro, Claude Desktop, Cursor and custom agents can call its seven tools: document conversion (Markdown ↔ PDF), metadata scrubbing, secret redaction, JWT inspection, read-only host telemetry, and the emergency Burn Workspace. All processing happens in memory or in temporary directories that are deleted after each call.
 
 ### Protocol & Transport
 
-* **Transport:** HTTP Server-Sent Events (SSE)
-* **Handshake Stream:** `GET /api/mcp/sse` (establishes SSE stream and advertises session message endpoint)
-* **Message Dispatch:** `POST /api/mcp/message?sessionId=<SESSION_ID>` (JSON-RPC 2.0 transport)
-* **Protocol Version:** `2024-11-05`
+The server speaks JSON-RPC 2.0, protocol version `2024-11-05`. Two transports are available on the same server:
+
+| Transport | Endpoints | Use it when |
+| :--- | :--- | :--- |
+| **HTTP POST (request/response)** | `POST /api/mcp/sse` or `POST /api/mcp` | Default for most clients, and the **only one that works on AWS Lambda**. The JSON-RPC response is returned in the HTTP response body. |
+| **SSE (legacy)** | `GET /api/mcp/sse` opens a stream and sends an `endpoint` event with `/api/mcp/message?sessionId=<id>`; requests are then sent with `POST /api/mcp/message?sessionId=<id>` and answered on the stream | Long-running servers (Docker). Not usable on Lambda: the Function URL runs in `BUFFERED` mode, so the stream cannot be delivered. |
+
+Supported JSON-RPC methods: `initialize`, `ping`, `tools/list`, `tools/call`, and the notification `notifications/initialized`. Any other method returns `-32601` (method not found).
+
+Only **tools** are implemented. MCP **resources** (`resources/list`, `resources/read`) and **prompts** (`prompts/list`, `prompts/get`) are not supported.
 
 ### Authentication
 
-All MCP endpoints enforce session authentication. Provide the instance JWT session token using the standard HTTP `Authorization` header:
+Every MCP request needs a token in the `Authorization` header. Requests without a valid token get HTTP `401` before any tool runs.
 
 ```http
-Authorization: Bearer <YOUR_JWT_SESSION_TOKEN>
+Authorization: Bearer <TOKEN>
 ```
 
-> **Obtaining a token:** Tokens are issued when logging into the instance via `POST /api/auth/login` (or retrieved from your browser cookie/session). Tokens remain valid for 1 hour.
+Two kinds of tokens work:
+
+* **MCP access token (recommended):** created from the Dashboard (see below). Lifetime 1 to 365 days.
+* **Login session token:** issued by `POST /api/auth/login` (the `disposable_session` cookie value). Valid for 1 hour.
 
 ### Creating a token from the Dashboard
 
-Open the Dashboard and use the **MCP access tokens** panel: enter a label, pick a lifetime (1 to 365 days) and press **Create token**. The token is shown once, together with a ready-to-paste client configuration. The same operation is available as `POST /api/auth/token` with `{"lifetime_seconds": 2592000, "label": "Kiro"}` (label max 64 characters). Tokens cannot be revoked yet: they stay valid until they expire or `JWT_SECRET` changes, so use short lifetimes.
+Open the Dashboard and use the **MCP access tokens** panel: enter a label, pick a lifetime (1 to 365 days) and press **Create token**. The token is shown once, together with a ready-to-paste client configuration. The same operation is available as `POST /api/auth/token` with `{"lifetime_seconds": 2592000, "label": "Kiro"}` (label max 64 characters, no control characters). Tokens cannot be revoked yet: they stay valid until they expire or `JWT_SECRET` changes, so use short lifetimes.
 
 ### Client Configuration
 
-Configure your MCP-compatible client (such as Claude Desktop or Cursor) by adding the server definition:
+Add the server to your MCP client (Kiro: `.kiro/settings/mcp.json`; Claude Desktop and Cursor use the same `mcpServers` shape):
 
 ```json
 {
@@ -200,80 +209,140 @@ Configure your MCP-compatible client (such as Claude Desktop or Cursor) by addin
     "disposable-service": {
       "url": "https://<YOUR-SERVER-DOMAIN-OR-IP>/api/mcp/sse",
       "headers": {
-        "Authorization": "Bearer <YOUR_JWT_SESSION_TOKEN>"
+        "Authorization": "Bearer <TOKEN>"
       }
     }
   }
 }
 ```
 
+Quick manual test (HTTP POST transport):
+
+```bash
+curl -s -X POST "https://<HOST>/api/mcp" \
+  -H "Authorization: Bearer <TOKEN>" -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+### Size Limits for Tool Inputs
+
+Files are passed as base64 inside the JSON-RPC request, which makes them about 33% larger.
+
+| Limit | Value |
+| :--- | :--- |
+| MCP request body | 36 MiB |
+| AWS Lambda Function URL request payload | about 6 MB, so in practice a file of at most about 4.4 MB fits in one call on Lambda |
+| `scrub_metadata` file | 25 MB decoded |
+| `pdf_to_markdown` file | The PDF to Markdown upload limit (25 MB, 5 MB on Lambda; see the PDF to Markdown environment variables), 300 pages |
+| `redact_secrets` text | 1,048,576 characters |
+| `inspect_jwt` token / secret | 8,192 characters / 1,024 bytes |
+
+### Ephemeral Download Links
+
+`convert_markdown_to_pdf`, `scrub_metadata` and long `pdf_to_markdown` results return a **relative** download path. Prefix it with the server's base URL. Each link works **once** and expires after **5 minutes**.
+
+| Tool | Path | Needs `Authorization` |
+| :--- | :--- | :--- |
+| `convert_markdown_to_pdf` | `/api/apps/pandoc/download/<token>` | No (the token is the secret) |
+| `scrub_metadata` | `/api/apps/scrubber/download/<token>` | No (the token is the secret) |
+| `pdf_to_markdown` (over 100,000 characters) | `/api/apps/pdf-to-markdown/download/<token>` | Yes |
+
+### Error Handling
+
+| Situation | Response |
+| :--- | :--- |
+| Missing or invalid token | HTTP `401` |
+| Burn Workspace running or finished | HTTP `503` with `"code": "burn_in_progress"` |
+| Invalid arguments (missing, wrong type, out of range, bad base64, unknown category or argument) | JSON-RPC error `-32602`; the message names the argument. Nothing runs and nothing is stored |
+| `pdf_to_markdown` document problem | JSON-RPC error `-32000` with `data.code`: `not_a_pdf`, `corrupt_pdf`, `encrypted_pdf`, `no_text_layer`, `too_many_pages`, `page_from_out_of_range`, `output_too_large`, `timeout`, `engine_unavailable` |
+| Internal failure (including a failed burn) | JSON-RPC error `-32603` |
+| Content problems in the other tools (unsupported file type, malformed JWT, Pandoc failure) | A normal result with `isError: true` and a text message |
+| Unknown tool name | Result with `isError: true` ("Unknown tool") |
+| Unknown method | JSON-RPC error `-32601` |
+
 ### Available Tools
 
+| # | Tool | What it does | Destructive |
+| :--- | :--- | :--- | :--- |
+| 1 | `convert_markdown_to_pdf` | Markdown → PDF with Pandoc | No |
+| 2 | `pdf_to_markdown` | Text-layer PDF → Markdown | No |
+| 3 | `scrub_metadata` | Remove metadata from JPEG, PNG, PDF | No |
+| 4 | `redact_secrets` | Mask secrets in text, `.env` and logs | No |
+| 5 | `inspect_jwt` | Decode and optionally verify a JWT | No |
+| 6 | `get_host_metrics` | Read-only host telemetry | No |
+| 7 | `burn_workspace_now` | Wipe the workspace and stop the server | **Yes, irreversible** |
+
 #### 1. `convert_markdown_to_pdf`
-Renders Markdown content into a clean PDF via Pandoc (LaTeX in the Docker image, Typst in the Lambda image) in a temporary sandbox.
+Renders Markdown into a PDF with Pandoc (LaTeX in the Docker image, Typst in the Lambda image) in a temporary directory.
 
 * **Parameters:**
-  * `markdown` (string, **required**): Raw Markdown text to convert.
-  * `filename` (string, *optional*, default: `document.pdf`): Target name for the compiled PDF.
-  * `preset` (object, *optional*): Pandoc Preset Specs overrides (see below).
-* **Output:**
-  Returns an ephemeral, one-time streaming download link:
-  ```text
-  Successfully generated PDF.
-  Filename: document.pdf
-  Download URL: /api/apps/pandoc/download/3fa85f64-5717-4562-b3fc-2c963f66afa6
-  Note: This is a one-time, burn-after-reading download link expiring in 5 minutes.
-  ```
-* **Zero-Retention Guarantee:**
-  * Pandoc compilation operates in an isolated temporary directory guarded by RAII drop cleanup.
-  * The compiled PDF binary is buffered in volatile RAM with a strict 5-minute time-to-live (TTL).
-  * **Burn-After-Reading:** As soon as the binary is streamed through the download endpoint, it is permanently deleted from memory.
+  * `markdown` (string, **required**, not empty): Markdown text.
+  * `filename` (string, optional, default `document.pdf`): output name; `.pdf` is added if missing.
+  * `preset` (object, optional): [Pandoc Preset Specs](#-pandoc-preset-specs) overrides. Fields: `paper_size` (`a3`, `a4`, `a5`, `letter`, `legal`), `margin_x`, `margin_y` (number + `cm`/`mm`/`in`/`pt`), `font_size` (`6pt` to `24pt`), `line_height` (1.0 to 2.5), `link_color` (`navy`, `black`, `blue`, `red`, `green`, `purple`, `teal`, `gray`), `main_font`. Unset fields use the server defaults.
+* **Output:** a text item with file name, size and the download path, plus a `resource` item containing the PDF as base64 (`application/pdf`).
+* **Errors:** empty `markdown` or a Pandoc failure returns `isError: true`; an invalid `preset` returns `isError: true` with the reason.
 
-#### 2. `get_host_metrics`
-Retrieves a real-time, read-only snapshot of host resource usage and operating conditions.
+#### 2. `pdf_to_markdown`
+Converts a PDF that has a text layer into Markdown: headings (by font size), paragraphs, lists, code blocks, bold/italic; repeated headers, footers and page numbers are removed. No OCR, tables, multi-column layout or images.
 
-* **Parameters:** None.
-* **Output:** JSON object containing:
-  * **CPU:** Utilization percentage across physical cores.
-  * **Memory:** RAM total/used/free and Swap allocation.
-  * **Disks:** Mount points, total space, and disk usage percentages.
-  * **System:** Host uptime and top active processes sorted by CPU and memory consumption.
+* **Parameters:**
+  * `file_base64` (string, **required**): the PDF, base64-encoded.
+  * `page_from`, `page_to` (integers ≥ 1, optional): page range, inclusive. Defaults: first to last page. `page_to` beyond the last page is clamped with a warning.
+  * `page_breaks` (boolean, optional, default `false`): insert `---` between pages.
+  * `strip_headers_footers` (boolean, optional, default `true`).
+  * Unknown arguments are rejected with `-32602`.
+* **Output (JSON in a text item):** `markdown`, `pages`, `headings`, `warnings`, `truncated`. When the Markdown exceeds 100,000 characters, `markdown` is replaced by a 2,000-character `preview` and a `download_url`, and `truncated` is `true`. Output is identical to `POST /api/apps/pdf-to-markdown`.
+* **Errors:** see the `-32000` codes above. A scanned PDF returns `no_text_layer`.
 
-#### 3. `redact_secrets`
-Masks secrets in text, `.env` content, and logs (same engine as `POST /api/apps/redactor`).
+#### 3. `scrub_metadata`
+Removes GPS, device and lens serials, author, creator software, embedded thumbnails and XMP/IPTC from JPEG and PNG, and the Info dictionary and XMP stream from PDF. Pixels and PDF text are kept.
 
-* **Parameters:** text (1 to 1,048,576 characters), plus optional category toggles and custom words.
-* **Output:** Redacted text and replacement counts per category (0 for categories without matches).
+* **Parameters:**
+  * `file_base64` (string, **required**): JPEG, PNG or PDF, base64-encoded (1 byte to 25 MB decoded).
+  * `filename` (string, optional): name for the cleaned file; only the base name is kept. Default `scrubbed.<ext>`.
+* **Output (JSON):** `download_url`, `filename`, `report` (categories and counts removed, never the values) and the expiry.
+* **Errors:** unsupported type, unreadable file or encrypted PDF returns `isError: true`.
 
-#### 4. `inspect_jwt`
-Decodes a JWT locally (same engine as `POST /api/apps/jwt`).
+#### 4. `redact_secrets`
+Replaces secrets with `[REDACTED:<category>]` (same engine as `POST /api/apps/redactor`). Line count is preserved and running it twice changes nothing.
 
-* **Parameters:** `token` (string, 1 to 8,192 characters), optional HMAC secret and redaction option.
-* **Output:** Formatted header and payload, claim times in ISO 8601 UTC, token status, and warnings (e.g. `alg: none`).
+* **Parameters:**
+  * `text` (string, **required**, 1 to 1,048,576 characters).
+  * `categories` (array of strings, optional, default all): `jwt`, `bearer`, `api_key`, `env_value`, `email`, `phone`, `ipv4`, `ipv6`, `credit_card`, `custom`. Unknown values return `-32602`.
+  * `custom_words` (array of strings, optional): up to 100 words, each 1 to 256 characters, matched exactly (case-sensitive). Applied when `custom` is active.
+  * `format` (string, optional, default `auto`): `auto`, `env` or `text`. `env` keeps variable names and replaces values.
+* **Output (JSON):** `text` (redacted) and `counts` per active category (0 when nothing matched).
 
-#### 5. `scrub_metadata`
-Strips sensitive metadata from a JPEG, PNG, or PDF.
+#### 5. `inspect_jwt`
+Decodes a JWT on the server without contacting third parties (same engine as `POST /api/apps/jwt`).
 
-* **Parameters:** base64-encoded file (decoded size 1 byte to 25 MB).
-* **Output:** A one-time Ephemeral Download URL (`/api/apps/scrubber/download/:token`, 5-minute TTL) and the Scrub Report.
+* **Parameters:**
+  * `token` (string, **required**, 1 to 8,192 characters).
+  * `secret` (string, optional, 1 to 1,024 bytes): verifies HS256, HS384 or HS512 signatures.
+  * `redact` (boolean, optional, default `false`): replaces `email`, `phone_number`, `phone`, `sub`, `name` and `preferred_username` in the payload with `[REDACTED:...]`.
+* **Output (JSON):** header and payload (raw and pretty), `exp`/`iat`/`nbf` as ISO 8601 UTC, `status` (`active`, `expired`, `not_yet_valid`), `signature` (`not_requested`, `valid`, `invalid`, `unsupported`), and `warnings` (for example `alg: none`).
+* **Errors:** a malformed token returns `isError: true` naming the broken segment.
 
-#### 5b. `pdf_to_markdown`
-Converts a text-layer PDF to Markdown.
+#### 6. `get_host_metrics`
+Returns a read-only snapshot of the host.
 
-* **Parameters:** `file_base64` (required), `page_from`, `page_to` (integers ≥ 1), `page_breaks`, `strip_headers_footers` (booleans). Optional parameters use the same defaults as the REST route.
-* **Output:** `markdown`, `pages`, `headings`, `warnings`, identical to the REST response. If the Markdown exceeds 100,000 characters, the result holds an Ephemeral Download URL, a 2,000-character preview, and `truncated: true`.
+* **Parameters:** none.
+* **Output (JSON):** CPU usage per core, RAM and swap, disks (mount point, total, used), uptime, and the top processes by CPU and memory. On Lambda this describes the Lambda execution environment.
 
-#### 6. `burn_workspace_now`
-Permanently destroys the workspace. Cannot be undone.
+#### 7. `burn_workspace_now`
+**Permanent and irreversible.** Wipes all sessions, ephemeral downloads, MCP sessions and temporary files, returns the Burn Audit Report, then stops the server process. Agents should call it only when the user explicitly asks for it.
 
-* **Parameters:** `confirm` (boolean, **required**, must be exactly `true`). Otherwise the call fails with JSON-RPC error `-32602` and nothing is deleted.
-* **Output:** The Burn Audit Report, after which the server process exits. See [Burn Workspace](#-privacy-micro-apps--burn-workspace).
+* **Parameters:** `confirm` (boolean, **required**, must be exactly `true`). Anything else returns `-32602` and nothing is deleted.
+* **Output:** the Burn Audit Report (see [Burn Workspace](#-privacy-micro-apps--burn-workspace)). Over SSE the report is sent as an event, then the stream closes.
+* **Errors:** a burn already in progress returns an error ("penghancuran sedang berlangsung"); a failed burn returns `-32603` and the process keeps running.
 
 ### Security & Ephemeral Guarantees
 
-* **Zero Footprint:** No markdown documents, compiled PDFs, or telemetry snapshots are stored in persistent databases or non-volatile disks.
-* **Automatic Eviction:** Unread downloads automatically expire and purge after 5 minutes.
-* **Session Lifecycle:** Dropping the MCP SSE connection immediately triggers cleanup of associated channel state and background tasks.
+* **Zero footprint:** no document, PDF, Markdown or telemetry snapshot is stored in a database or on persistent disk.
+* **Automatic eviction:** unread downloads are deleted after 5 minutes; Burn Workspace deletes them immediately.
+* **No content in logs:** file names, file contents, tokens, secrets and redacted text are never logged.
+* **Session lifecycle:** closing an SSE connection removes its session state.
+
 
 ---
 
@@ -302,7 +371,7 @@ All routes below require an authenticated session (otherwise `401`). Nothing is 
 
 ### MCP Tools
 
-`redact_secrets`, `inspect_jwt`, `scrub_metadata`, and `burn_workspace_now` (see [Available Tools](#available-tools)).
+`redact_secrets`, `inspect_jwt`, `scrub_metadata` and `burn_workspace_now`, plus `pdf_to_markdown`, `convert_markdown_to_pdf` and `get_host_metrics` (see [Available Tools](#available-tools)).
 
 ### Burn Workspace Behavior
 

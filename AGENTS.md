@@ -182,12 +182,7 @@ DOCKER_PLATFORM=linux/amd64 scripts/test-docker.sh pdf2md   # optional --platfor
 - Env vars `PDF_MD_ENGINE`, `PDF_MD_MAX_BYTES`, `PDF_MD_MAX_RESPONSE_BYTES`: see Section 5.7.
 - Tests needing poppler: see "Running Poppler-Dependent Tests in Docker" in Section 3.
 
-**MCP tools** (alongside `convert_markdown_to_pdf` and `get_host_metrics`):
-- `pdf_to_markdown`: `file_base64` (required) plus optional `page_from`, `page_to`, `page_breaks`, `strip_headers_footers`; returns the same `markdown`, `pages`, `headings`, `warnings` as the REST route. Markdown over 100,000 characters is returned as an Ephemeral Download URL with a 2,000-character preview and `truncated: true`.
-- `redact_secrets`: same output as the redactor endpoint.
-- `inspect_jwt`: same output as the JWT endpoint.
-- `scrub_metadata`: base64 input, returns Ephemeral Download URL + Scrub Report.
-- `burn_workspace_now` ("Burn Workspace Now"): requires `confirm: true` (boolean). Otherwise JSON-RPC `-32602`; a burn already running returns an in-progress error; failure returns `-32603` and the process keeps running.
+**MCP tools:** see Section 4.6.
 
 **Burn Workspace behavior:**
 - **Managed_Storage scope:** `sessions`, `downloads`, `mcp_sessions` in `AppState` plus the workspace temp directory. Download buffers are zeroed before being freed, MCP SSE connections are closed, the JWT cookie is cleared.
@@ -197,6 +192,36 @@ DOCKER_PLATFORM=linux/amd64 scripts/test-docker.sh pdf2md   # optional --platfor
 - **`RESTART_POLICY`:** `deploy/docker-compose.yml` uses `restart: ${RESTART_POLICY:-on-failure}`. With `no` or `on-failure` (default) the container stays stopped after a burn. With `unless-stopped` or `always`, Docker restarts it and the Audit Report carries a warning.
 - The CLI `teardown` command must not call or depend on Burn Service.
 - Every new feature needs at least one success-path and one failure-path test run by `cargo test --workspace`.
+
+### 4.6 MCP Server
+
+Code: `crates/server/src/routes/mcp.rs`. User-facing reference: README "Model Context Protocol (MCP) Integration".
+
+- **Protocol:** JSON-RPC 2.0, version `2024-11-05`. Methods: `initialize`, `ping`, `tools/list`, `tools/call`, notification `notifications/initialized`; others return `-32601`. Only tools are implemented (no resources, no prompts).
+- **Transports:** `POST /api/mcp/sse` and `POST /api/mcp` answer in the HTTP body (the only mode that works on Lambda, whose Function URL is `BUFFERED`). Legacy SSE: `GET /api/mcp/sse` plus `POST /api/mcp/message?sessionId=<id>`. MCP request body limit: 36 MiB.
+- **Auth:** `Authorization: Bearer <token>` through `AuthenticatedSession` (401 otherwise). Long-lived tokens come from `POST /api/auth/token` / the Dashboard panel; type and label are embedded in the JWT so a fresh container can restore them. No revocation yet.
+- **Burn gate:** MCP routes return HTTP `503` (`burn_in_progress`) during or after a burn.
+
+| Tool | Required args | Optional args | Result |
+|------|---------------|---------------|--------|
+| `convert_markdown_to_pdf` | `markdown` | `filename`, `preset` (Pandoc Preset Specs) | Text + base64 `resource`; download `/api/apps/pandoc/download/<token>` |
+| `pdf_to_markdown` | `file_base64` | `page_from`, `page_to`, `page_breaks` (false), `strip_headers_footers` (true); unknown args rejected | `markdown`, `pages`, `headings`, `warnings`, `truncated`; > 100,000 chars: 2,000-char `preview` + `download_url` (auth required) |
+| `scrub_metadata` | `file_base64` (≤ 25 MB decoded) | `filename` | `download_url` (`/api/apps/scrubber/download/<token>`), `filename`, `report`, `expires_in_secs` |
+| `redact_secrets` | `text` (≤ 1,048,576 chars) | `categories` (`jwt`, `bearer`, `api_key`, `env_value`, `email`, `phone`, `ipv4`, `ipv6`, `credit_card`, `custom`), `custom_words` (≤ 100 × 256 chars), `format` (`auto`, `env`, `text`) | Same JSON as `POST /api/apps/redactor` |
+| `inspect_jwt` | `token` (≤ 8,192 chars) | `secret` (≤ 1,024 bytes, HS256/384/512), `redact` | Same JSON as `POST /api/apps/jwt` |
+| `get_host_metrics` | none | none | Host telemetry snapshot |
+| `burn_workspace_now` | `confirm: true` (boolean) | none | Burn Audit Report, then the process exits |
+
+- **Errors:** invalid arguments `-32602` naming the argument, with nothing executed or stored; `pdf_to_markdown` document errors `-32000` with `data.code` (`not_a_pdf`, `corrupt_pdf`, `encrypted_pdf`, `no_text_layer`, `too_many_pages`, `page_from_out_of_range`, `output_too_large`, `timeout`, `engine_unavailable`); internal failures and failed burns `-32603`; content errors of the older tools return `isError: true`; a second burn while one runs returns "penghancuran sedang berlangsung".
+- **Downloads:** all are relative, one-time, 5-minute TTL; only the PDF-to-Markdown download requires auth.
+- **Lambda sizing:** the Function URL payload limit (about 6 MB) means base64 files above about 4.4 MB cannot be sent in one call on Lambda.
+- **Rules when changing tools:**
+  - Keep the schema in `tools/list` and the argument validation in the `call_*` function in sync; tool descriptions are what agents read, so state limits, defaults and allowed values there.
+  - REST and MCP must call the same core function and return identical data (parity property tests exist for `redact_secrets`, `inspect_jwt` and `pdf_to_markdown`).
+  - Validate every argument before doing work; never log arguments, file contents, tokens or secrets.
+  - Descriptions and schemas live in `tools_list_json` in `routes/mcp.rs`. Limits that depend on configuration (the `pdf_to_markdown` size) are filled in from `AppState` at request time.
+  - `privacy/tests/unit_mcp.rs` checks that the `redact_secrets` enums match `Category::ALL` and `Format::parse`; `pdf2md/tests/unit_mcp.rs` checks that `pdf_to_markdown` reports the configured limit.
+  - Update this section, the README MCP section, and those tests.
 
 ---
 

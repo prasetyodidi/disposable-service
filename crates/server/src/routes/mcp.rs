@@ -693,6 +693,195 @@ pub async fn mcp_sse_handler(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// Note appended to every tool that returns a download link.
+const DOWNLOAD_NOTE: &str = "Download paths are relative: prefix them with this server's base URL. Each link works once and expires after 5 minutes.";
+
+/// The `tools/list` result. Descriptions and schemas are what agents read,
+/// so they state limits, defaults and allowed values. Keep them in sync with
+/// the argument validation in the `call_*` functions and with the README.
+fn tools_list_json(state: &AppState) -> serde_json::Value {
+    let pdf_max_bytes = state.pdf.config.max_bytes;
+    let pdf_max_mb = pdf_max_bytes as f64 / (1024.0 * 1024.0);
+    let pdf_max_pages = state.pdf.config.max_pages;
+    serde_json::json!({
+        "tools": [
+            {
+                "name": "convert_markdown_to_pdf",
+                "description": format!(
+                    "Convert Markdown text to a PDF with Pandoc (Typst engine on AWS Lambda, LaTeX in the Docker image). Defaults: A4, margins 2cm left/right and 1.8cm top/bottom, 10.5pt, line height 1.25, navy links; override them with `preset`. Returns a text item with the file name, size and a download path (/api/apps/pandoc/download/<token>, no Authorization needed), plus a `resource` item with the PDF as base64. {DOWNLOAD_NOTE}"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "markdown": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Markdown text to convert (must not be empty)"
+                        },
+                        "filename": {
+                            "type": "string",
+                            "description": "Output file name (default: document.pdf; .pdf is added if missing)"
+                        },
+                        "preset": {
+                            "type": "object",
+                            "description": "Optional Pandoc Preset Specs overrides. Unset fields use the defaults listed in the tool description. An invalid value makes the call fail with the reason.",
+                            "properties": {
+                                "paper_size": { "type": "string", "enum": ["a3", "a4", "a5", "letter", "legal"] },
+                                "margin_x": { "type": "string", "description": "Left/right margin: a number followed by cm, mm, in or pt, e.g. 2cm (max 10cm, 100mm, 4in or 300pt)" },
+                                "margin_y": { "type": "string", "description": "Top/bottom margin, same format as margin_x, e.g. 1.8cm" },
+                                "font_size": { "type": "string", "description": "Base font size from 6pt to 24pt, e.g. 10.5pt" },
+                                "line_height": { "type": "number", "minimum": 1.0, "maximum": 2.5 },
+                                "link_color": { "type": "string", "enum": ["navy", "black", "blue", "red", "green", "purple", "teal", "gray"] },
+                                "main_font": { "type": "string", "maxLength": 64, "description": "Font family name (letters, digits, spaces and hyphens only). Empty uses the engine default" }
+                            }
+                        }
+                    },
+                    "required": ["markdown"]
+                }
+            },
+            {
+                "name": "get_host_metrics",
+                "description": "Get a read-only snapshot of the host: CPU usage per core, RAM and swap, disks (mount point, total, used), uptime, and the top processes by CPU and memory. On AWS Lambda this describes the Lambda execution environment. Takes no arguments.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "redact_secrets",
+                "description": "Replace secrets in text, .env content or logs with [REDACTED:<category>], in memory. Line count is preserved and running it twice changes nothing. Returns JSON with the redacted `text` and `counts` per active category (0 when nothing matched). Unknown categories or formats are rejected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1048576,
+                            "description": "Text to redact (1 to 1,048,576 characters)"
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["jwt", "bearer", "api_key", "env_value", "email", "phone", "ipv4", "ipv6", "credit_card", "custom"]
+                            },
+                            "description": "Categories to redact (default: all). `custom` applies `custom_words`; `env_value` replaces the values of KEY=VALUE lines"
+                        },
+                        "custom_words": {
+                            "type": "array",
+                            "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+                            "maxItems": 100,
+                            "description": "Extra words or phrases to redact, matched exactly and case-sensitively (up to 100 words, 1 to 256 characters each). Used when the `custom` category is active"
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["auto", "env", "text"],
+                            "description": "Input format (default: auto). `env` keeps variable names and comments and replaces only values; `text` treats the input as free text"
+                        }
+                    },
+                    "required": ["text"]
+                }
+            },
+            {
+                "name": "inspect_jwt",
+                "description": "Decode a JWT on this server without contacting any third party. Returns JSON with the header and payload (raw and pretty-printed), exp/iat/nbf as ISO 8601 UTC, `status` (active, expired, not_yet_valid), `signature` (not_requested, valid, invalid, unsupported) and `warnings` (for example alg: none). A malformed token fails with a message naming the broken segment.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "token": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 8192,
+                            "description": "JWT to inspect (1 to 8,192 characters)"
+                        },
+                        "secret": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Optional HMAC secret (1 to 1,024 bytes) to verify HS256, HS384 or HS512 signatures. Other algorithms report `unsupported`"
+                        },
+                        "redact": {
+                            "type": "boolean",
+                            "description": "Replace the identity claims email, phone_number, phone, sub, name and preferred_username with [REDACTED:...] in the output (default: false)"
+                        }
+                    },
+                    "required": ["token"]
+                }
+            },
+            {
+                "name": "scrub_metadata",
+                "description": format!(
+                    "Remove sensitive metadata from a JPEG, PNG or PDF file in memory: GPS, device and lens serials, author, creator software, thumbnails and XMP/IPTC for images; the Info dictionary and XMP for PDF. Pixels and PDF text are kept. Returns JSON with `download_url` (/api/apps/scrubber/download/<token>, no Authorization needed), `filename`, `report` (categories and counts removed, never the values) and `expires_in_secs`. Unsupported, unreadable or encrypted files fail with a message. {DOWNLOAD_NOTE}"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file_base64": {
+                            "type": "string",
+                            "description": "Base64-encoded JPEG, PNG or PDF (decoded size 1 to 26,214,400 bytes). The file type is detected from its content"
+                        },
+                        "filename": {
+                            "type": "string",
+                            "description": "Name for the cleaned file; only the base name is kept (default: scrubbed.<ext>)"
+                        }
+                    },
+                    "required": ["file_base64"]
+                }
+            },
+            {
+                "name": "burn_workspace_now",
+                "title": "Burn Workspace Now",
+                "description": "PERMANENT and IRREVERSIBLE: wipes all sessions, ephemeral downloads, MCP sessions and temporary files from this server, returns a zero-byte audit report, then shuts the server process down. This cannot be undone. Call it only when the user explicitly asks to burn or destroy the workspace; never as cleanup after other tools (their data is already deleted automatically).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "confirm": {
+                            "type": "boolean",
+                            "const": true,
+                            "description": "Must be the boolean true to confirm the permanent, irreversible burn"
+                        }
+                    },
+                    "required": ["confirm"]
+                }
+            },
+            {
+                "name": "pdf_to_markdown",
+                "description": format!(
+                    "Convert a PDF that has a text layer to Markdown in memory: headings (detected by font size), paragraphs, lists, code blocks and bold/italic; repeated headers, footers and page numbers are removed by default. No OCR (scanned PDFs fail with no_text_layer), tables, multi-column layout or images. Limits on this server: {pdf_max_mb:.0} MB ({pdf_max_bytes} bytes) decoded and {pdf_max_pages} pages. Returns JSON with `markdown`, `pages`, `headings`, `warnings` and `truncated`. When the Markdown exceeds 100,000 characters, `markdown` is replaced by a 2,000-character `preview` and a `download_url` (/api/apps/pdf-to-markdown/download/<token>, requires the same Authorization header). {DOWNLOAD_NOTE} Document problems return JSON-RPC error -32000 with data.code (not_a_pdf, corrupt_pdf, encrypted_pdf, no_text_layer, too_many_pages, page_from_out_of_range, output_too_large, timeout, engine_unavailable)."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file_base64": {
+                            "type": "string",
+                            "description": format!("Base64-encoded PDF (decoded size 1 to {pdf_max_bytes} bytes)")
+                        },
+                        "page_from": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "First page to convert, 1-based (default: 1)"
+                        },
+                        "page_to": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Last page to convert, inclusive (default: last page; a value beyond the last page is clamped with a warning). Must be >= page_from"
+                        },
+                        "page_breaks": {
+                            "type": "boolean",
+                            "description": "Insert a --- line between pages (default: false)"
+                        },
+                        "strip_headers_footers": {
+                            "type": "boolean",
+                            "description": "Remove repeated headers, footers and page numbers (default: true)"
+                        }
+                    },
+                    "required": ["file_base64"],
+                    "additionalProperties": false
+                }
+            }
+        ]
+    })
+}
+
 /// JSON-RPC 2.0 message handler for MCP
 pub async fn mcp_message_handler(
     _auth: AuthenticatedSession,
@@ -740,169 +929,7 @@ pub async fn mcp_message_handler(
             })
         }
         "tools/list" => {
-            let result = serde_json::json!({
-                "tools": [
-                    {
-                        "name": "convert_markdown_to_pdf",
-                        "description": "Convert Markdown text to PDF using Pandoc (Typst or LaTeX engine, adjustable preset). Returns a one-time ephemeral download link.",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "markdown": {
-                                    "type": "string",
-                                    "description": "Markdown text to convert to PDF"
-                                },
-                                "filename": {
-                                    "type": "string",
-                                    "description": "Optional output filename for the PDF (default: document.pdf)"
-                                },
-                                "preset": {
-                                    "type": "object",
-                                    "description": "Optional Pandoc Preset Specs overrides. Unset fields use the server defaults (A4, margins 2cm/1.8cm, 10.5pt, line height 1.25, navy links).",
-                                    "properties": {
-                                        "paper_size": { "type": "string", "enum": ["a3", "a4", "a5", "letter", "legal"] },
-                                        "margin_x": { "type": "string", "description": "Left/right margin, e.g. 2cm (units: cm, mm, in, pt)" },
-                                        "margin_y": { "type": "string", "description": "Top/bottom margin, e.g. 1.8cm" },
-                                        "font_size": { "type": "string", "description": "6pt to 24pt, e.g. 10.5pt" },
-                                        "line_height": { "type": "number", "minimum": 1.0, "maximum": 2.5 },
-                                        "link_color": { "type": "string", "enum": ["navy", "black", "blue", "red", "green", "purple", "teal", "gray"] },
-                                        "main_font": { "type": "string", "description": "Font family name (letters, digits, spaces, hyphens)" }
-                                    }
-                                }
-                            },
-                            "required": ["markdown"]
-                        }
-                    },
-                    {
-                        "name": "get_host_metrics",
-                        "description": "Get real-time read-only host telemetry snapshot including CPU cores, RAM, swap, disks, and top processes.",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {}
-                        }
-                    },
-                    {
-                        "name": "redact_secrets",
-                        "description": "Mask secrets (API keys, tokens, passwords, emails, IPs, etc.) in text, .env or log content. Processed in memory only; returns the redacted text and a report of categories and counts.",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "text": {
-                                    "type": "string",
-                                    "minLength": 1,
-                                    "maxLength": 1048576,
-                                    "description": "Text to redact (1 to 1,048,576 characters)"
-                                },
-                                "categories": {
-                                    "type": "array",
-                                    "items": { "type": "string" },
-                                    "description": "Optional list of secret categories to redact (default: all)"
-                                },
-                                "custom_words": {
-                                    "type": "array",
-                                    "items": { "type": "string" },
-                                    "description": "Optional extra words or phrases to redact"
-                                },
-                                "format": {
-                                    "type": "string",
-                                    "description": "Optional input format hint (e.g. text, env, log)"
-                                }
-                            },
-                            "required": ["text"]
-                        }
-                    },
-                    {
-                        "name": "inspect_jwt",
-                        "description": "Decode a JWT locally without sending it to any third party. Returns header, payload, timestamps, status, warnings and optional HMAC verification.",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "token": {
-                                    "type": "string",
-                                    "minLength": 1,
-                                    "maxLength": 8192,
-                                    "description": "JWT to inspect (1 to 8,192 characters)"
-                                },
-                                "secret": {
-                                    "type": "string",
-                                    "description": "Optional HMAC secret used to verify the signature"
-                                },
-                                "redact": {
-                                    "type": "boolean",
-                                    "description": "Optionally redact sensitive claims in the output"
-                                }
-                            },
-                            "required": ["token"]
-                        }
-                    },
-                    {
-                        "name": "scrub_metadata",
-                        "description": "Strip sensitive metadata (EXIF, XMP, document info, etc.) from a JPEG, PNG or PDF file, in memory. Returns a one-time ephemeral download link (5 minutes) and a scrub report.",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "file_base64": {
-                                    "type": "string",
-                                    "description": "Base64-encoded file content (decoded size 1 to 26,214,400 bytes)"
-                                },
-                                "filename": {
-                                    "type": "string",
-                                    "description": "Optional output filename"
-                                }
-                            },
-                            "required": ["file_base64"]
-                        }
-                    },
-                    {
-                        "name": "burn_workspace_now",
-                        "title": "Burn Workspace Now",
-                        "description": "PERMANENT and IRREVERSIBLE: wipes all sessions, ephemeral downloads, MCP sessions and temporary files from this server, returns a zero-byte audit report, then shuts the server process down. This cannot be undone.",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "confirm": {
-                                    "type": "boolean",
-                                    "const": true,
-                                    "description": "Must be true to confirm the permanent, irreversible burn"
-                                }
-                            },
-                            "required": ["confirm"]
-                        }
-                    },
-                    {
-                        "name": "pdf_to_markdown",
-                        "description": "Convert a text-layer PDF to Markdown in memory (no OCR, tables or images). Returns markdown, pages, headings and warnings; long results return a preview plus a one-time ephemeral download link (5 minutes).",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "file_base64": {
-                                    "type": "string",
-                                    "description": "Base64-encoded PDF content"
-                                },
-                                "page_from": {
-                                    "type": "integer",
-                                    "minimum": 1,
-                                    "description": "First page to convert (1-based)"
-                                },
-                                "page_to": {
-                                    "type": "integer",
-                                    "minimum": 1,
-                                    "description": "Last page to convert (1-based)"
-                                },
-                                "page_breaks": {
-                                    "type": "boolean",
-                                    "description": "Insert a page break marker between pages"
-                                },
-                                "strip_headers_footers": {
-                                    "type": "boolean",
-                                    "description": "Remove repeated headers and footers"
-                                }
-                            },
-                            "required": ["file_base64"]
-                        }
-                    }
-                ]
-            });
+            let result = tools_list_json(&state);
             serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": id,

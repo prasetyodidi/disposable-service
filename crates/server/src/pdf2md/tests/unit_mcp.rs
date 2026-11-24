@@ -286,3 +286,29 @@ async fn logs_never_contain_arguments_content_or_paths() {
         assert!(!out.contains(needle), "log leaks {needle:?}: {out}");
     }
 }
+
+/// The pdf_to_markdown description and schema report this server's real limits,
+/// so agents on Lambda see 5 MB instead of the 25 MB default.
+#[tokio::test]
+async fn pdf_to_markdown_schema_reports_configured_limits() {
+    let root = tempfile::tempdir().unwrap();
+    let mut rt = test_runtime(MockEngine::doc(doc_with_text("x")), root.path());
+    rt.config.max_bytes = 5_242_880;
+    let (app, _state, token) = authed_pdf_app(rt).await;
+    let v = rpc_call(&app, &token, &rpc("tools/list", serde_json::json!({}))).await;
+    let tool = v["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "pdf_to_markdown")
+        .unwrap()
+        .clone();
+    let desc = tool["description"].as_str().unwrap();
+    assert!(desc.contains("5242880 bytes") && desc.contains("5 MB"), "{desc}");
+    assert!(desc.contains("300 pages"), "{desc}");
+    assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+    assert!(tool["inputSchema"]["properties"]["file_base64"]["description"]
+        .as_str()
+        .unwrap()
+        .contains("5242880"));
+}
