@@ -36,7 +36,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     texlive-fonts-recommended \
     texlive-latex-recommended \
     lmodern \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# Fail the build if pdftohtml is missing (poppler's -v exits with 99)
+RUN pdftohtml -v || [ $? -eq 99 ]
 
 WORKDIR /app
 
@@ -49,6 +53,7 @@ ENV HOST=0.0.0.0
 ENV STATIC_DIR=/app/frontend/dist
 ENV PANDOC_BIN=pandoc
 ENV PANDOC_PDF_ENGINE=pdflatex
+ENV PDF_MD_ENGINE=poppler
 
 EXPOSE 80
 

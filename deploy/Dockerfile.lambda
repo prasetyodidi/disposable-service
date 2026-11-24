@@ -37,7 +37,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     xz-utils \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# Fail the build if pdftohtml is missing (poppler's -v exits with 99)
+RUN pdftohtml -v || [ $? -eq 99 ]
 
 # Install static Pandoc v3.6.3 binary (natively supports --pdf-engine=typst)
 RUN set -eux; \
@@ -79,6 +83,9 @@ ENV STATIC_DIR=/app/frontend/dist
 ENV DOC_ENGINE=typst
 ENV TYPST_BIN=/usr/local/bin/typst
 ENV PANDOC_BIN=/usr/local/bin/pandoc
+ENV PDF_MD_ENGINE=poppler
+ENV PDF_MD_MAX_BYTES=5242880
+ENV PDF_MD_MAX_RESPONSE_BYTES=5767168
 ENV HOME=/tmp
 ENV XDG_DATA_HOME=/tmp
 ENV XDG_CACHE_HOME=/tmp

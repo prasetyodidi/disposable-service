@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6b5b01e0e1fc37bdb1ed3c8b2b0211d59233f76f1f43ca03873202fd1165701f # shrinks to sentence = Sentence { text: "1000000000009 0.0.0.0", secrets: [Secret { category: CreditCard, text: "1000000000009" }, Secret { category: Ipv4, text: "0.0.0.0" }] }, active = {ApiKey, Phone, Ipv4, CreditCard}
+cc 461c3b8dddab2c0c319a13d7639c9e65a000d99a6dabb61fd22d221e01dc2fa7 # shrinks to sentence = Sentence { text: "eyJa0a-.00--. alpha 5880 0217 1407 071 10.0.0.0 alpha eyJV-fNl0-YG.l-8CUvl_Xp_-_XUz_idNe_MrKYy-.jfW--y_T_S-3zg4-0-Jjd alpha alpha", secrets: [Secret { category: Jwt, text: "eyJa0a-.00--." }, Secret { category: CreditCard, text: "5880 0217 1407 071" }, Secret { category: Ipv4, text: "10.0.0.0" }, Secret { category: Jwt, text: "eyJV-fNl0-YG.l-8CUvl_Xp_-_XUz_idNe_MrKYy-.jfW--y_T_S-3zg4-0-Jjd" }] }, active = {Jwt, Email, Ipv6, CreditCard}
+cc da8b0d345f0ed135fd4aae29247e12d67163deb6328aa898c5bdb42ea09f63fb # shrinks to sentence = Sentence { text: "alpha alpha +1000000000 75a:fa:e8:091:3a5f:20:e:bc eyJaa_0.-A_-.", secrets: [Secret { category: Phone, text: "+1000000000" }, Secret { category: Ipv6, text: "75a:fa:e8:091:3a5f:20:e:bc" }, Secret { category: Jwt, text: "eyJaa_0.-A_-." }] }, active = {Bearer, ApiKey, Email, Phone, Ipv4, Ipv6}

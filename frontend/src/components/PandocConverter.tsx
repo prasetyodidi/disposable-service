@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   FileText,
   Upload,
@@ -10,7 +10,9 @@ import {
   Sliders,
   Trash2,
 } from 'lucide-react';
-import { Navbar } from './Navbar';
+import { PageShell } from './PageShell';
+import type { PandocPresetInfo, PandocPresetValues } from '../types/pandoc';
+import { PRIMARY_BUTTON } from '../lib/ui';
 
 const SAMPLE_MARKDOWN = `# Disposable Workspace: Confidential Report
 
@@ -62,6 +64,30 @@ export const PandocConverter: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [presetInfo, setPresetInfo] = useState<PandocPresetInfo | null>(null);
+  const [preset, setPreset] = useState<PandocPresetValues | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/apps/pandoc/preset')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((info: PandocPresetInfo | null) => {
+        if (cancelled || !info) return;
+        setPresetInfo(info);
+        setPreset(info.defaults);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const presetDirty =
+    presetInfo !== null && preset !== null && JSON.stringify(preset) !== JSON.stringify(presetInfo.defaults);
+
+  const updatePreset = (patch: Partial<PandocPresetValues>) => {
+    setPreset((prev) => (prev ? { ...prev, ...patch } : prev));
+  };
 
   const handleLoadSample = () => {
     setMarkdown(SAMPLE_MARKDOWN);
@@ -115,11 +141,13 @@ export const PandocConverter: React.FC = () => {
           body: JSON.stringify({
             markdown,
             filename: 'document.pdf',
+            preset: preset ?? undefined,
           }),
         });
       } else {
         const formData = new FormData();
         formData.append('file', file as File);
+        if (preset) formData.append('preset', JSON.stringify(preset));
         response = await fetch('/api/apps/pandoc/convert-upload', {
           method: 'POST',
           body: formData,
@@ -164,10 +192,7 @@ export const PandocConverter: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-surface-soft dark:bg-dark-canvas flex flex-col transition-colors">
-      <Navbar currentPath="/pandoc" />
-
-      <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-10">
+    <PageShell currentPath="/pandoc">
         <div className="mb-8">
           <div className="flex items-center gap-2 text-xs font-semibold text-rausch uppercase tracking-wider mb-1">
             <Sparkles size={14} />
@@ -324,7 +349,7 @@ export const PandocConverter: React.FC = () => {
                 <button
                   onClick={handleConvert}
                   disabled={converting}
-                  className="h-12 px-6 bg-rausch hover:bg-rausch-active disabled:bg-rausch-disabled text-white font-semibold text-sm rounded-sm flex items-center gap-2 cursor-pointer transition-all shadow-xs"
+                  className={PRIMARY_BUTTON}
                 >
                   <Download size={16} />
                   <span>{converting ? 'Typesetting PDF...' : 'Convert & Download PDF'}</span>
@@ -336,51 +361,122 @@ export const PandocConverter: React.FC = () => {
           {/* Sidebar / Parameters Card (1 Col) */}
           <div className="space-y-6">
             <div className="bg-white dark:bg-dark-card rounded-md shadow-airbnb p-6 border border-hairline-soft dark:border-dark-hairline">
-              <div className="flex items-center gap-2 mb-4 pb-3 border-b border-hairline-soft dark:border-dark-hairline">
-                <Sliders size={18} className="text-rausch" />
-                <h3 className="text-sm font-bold text-ink dark:text-dark-ink uppercase tracking-wider">
-                  Pandoc Preset Specs
-                </h3>
+              <div className="flex items-center justify-between gap-2 mb-4 pb-3 border-b border-hairline-soft dark:border-dark-hairline">
+                <div className="flex items-center gap-2">
+                  <Sliders size={18} className="text-rausch" />
+                  <h3 className="text-sm font-bold text-ink dark:text-dark-ink uppercase tracking-wider">
+                    Pandoc Preset Specs
+                  </h3>
+                </div>
+                {presetDirty && presetInfo && (
+                  <button
+                    type="button"
+                    onClick={() => setPreset(presetInfo.defaults)}
+                    className="text-xs font-semibold text-rausch hover:underline"
+                  >
+                    Reset
+                  </button>
+                )}
               </div>
-
-              <div className="space-y-3.5 text-xs">
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
-                  <span className="text-muted dark:text-dark-muted">PDF Engine:</span>
-                  <span className="font-mono font-semibold text-ink dark:text-dark-ink">pdflatex</span>
+              {!preset || !presetInfo ? (
+                <p className="text-xs text-muted dark:text-dark-muted">Loading preset…</p>
+              ) : (
+                <div className="space-y-3 text-xs">
+                  <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
+                    <span className="text-muted dark:text-dark-muted">PDF Engine:</span>
+                    <span className="font-mono font-semibold text-ink dark:text-dark-ink">{presetInfo.engine}</span>
+                  </div>
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-muted dark:text-dark-muted">Paper Size:</span>
+                    <select
+                      aria-label="Paper size"
+                      value={preset.paper_size}
+                      onChange={(e) => updatePreset({ paper_size: e.target.value })}
+                      className="w-32 rounded-sm border border-hairline-soft dark:border-dark-hairline bg-white dark:bg-dark-surface px-2 py-1 font-mono text-ink dark:text-dark-ink"
+                    >
+                      {presetInfo.paper_sizes.map((p) => (
+                        <option key={p} value={p}>
+                          {p.toUpperCase()}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-muted dark:text-dark-muted">Margin top/bottom:</span>
+                    <input
+                      aria-label="Margin top and bottom"
+                      value={preset.margin_y}
+                      onChange={(e) => updatePreset({ margin_y: e.target.value })}
+                      className="w-32 rounded-sm border border-hairline-soft dark:border-dark-hairline bg-white dark:bg-dark-surface px-2 py-1 font-mono text-ink dark:text-dark-ink"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-muted dark:text-dark-muted">Margin left/right:</span>
+                    <input
+                      aria-label="Margin left and right"
+                      value={preset.margin_x}
+                      onChange={(e) => updatePreset({ margin_x: e.target.value })}
+                      className="w-32 rounded-sm border border-hairline-soft dark:border-dark-hairline bg-white dark:bg-dark-surface px-2 py-1 font-mono text-ink dark:text-dark-ink"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-muted dark:text-dark-muted">Font Size:</span>
+                    <input
+                      aria-label="Font size"
+                      value={preset.font_size}
+                      onChange={(e) => updatePreset({ font_size: e.target.value })}
+                      className="w-32 rounded-sm border border-hairline-soft dark:border-dark-hairline bg-white dark:bg-dark-surface px-2 py-1 font-mono text-ink dark:text-dark-ink"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-muted dark:text-dark-muted">Line Height:</span>
+                    <input
+                      aria-label="Line height"
+                      type="number"
+                      step="0.05"
+                      min="1"
+                      max="2.5"
+                      value={preset.line_height}
+                      onChange={(e) => updatePreset({ line_height: Number(e.target.value) })}
+                      className="w-32 rounded-sm border border-hairline-soft dark:border-dark-hairline bg-white dark:bg-dark-surface px-2 py-1 font-mono text-ink dark:text-dark-ink"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-muted dark:text-dark-muted">Link Color:</span>
+                    <select
+                      aria-label="Link color"
+                      value={preset.link_color}
+                      onChange={(e) => updatePreset({ link_color: e.target.value })}
+                      className="w-32 rounded-sm border border-hairline-soft dark:border-dark-hairline bg-white dark:bg-dark-surface px-2 py-1 font-mono text-ink dark:text-dark-ink"
+                    >
+                      {presetInfo.link_colors.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-muted dark:text-dark-muted">Font Family:</span>
+                    <input
+                      aria-label="Font family"
+                      placeholder="Engine default"
+                      value={preset.main_font ?? ''}
+                      onChange={(e) => updatePreset({ main_font: e.target.value || null })}
+                      className="w-32 rounded-sm border border-hairline-soft dark:border-dark-hairline bg-white dark:bg-dark-surface px-2 py-1 font-mono text-ink dark:text-dark-ink"
+                    />
+                  </label>
                 </div>
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
-                  <span className="text-muted dark:text-dark-muted">Paper Size:</span>
-                  <span className="font-mono font-semibold text-ink dark:text-dark-ink">A4</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
-                  <span className="text-muted dark:text-dark-muted">Page Margins:</span>
-                  <span className="font-mono text-ink dark:text-dark-ink">top/bottom 1.8cm, left/right 2cm</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
-                  <span className="text-muted dark:text-dark-muted">Typography Font:</span>
-                  <span className="font-mono text-ink dark:text-dark-ink">Helvetica Neue / Standard</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
-                  <span className="text-muted dark:text-dark-muted">Base Font Size:</span>
-                  <span className="font-mono text-ink dark:text-dark-ink">10.5pt</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
-                  <span className="text-muted dark:text-dark-muted">Line Height:</span>
-                  <span className="font-mono text-ink dark:text-dark-ink">1.25</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-hairline-soft/60 dark:border-dark-hairline/60">
-                  <span className="text-muted dark:text-dark-muted">Colorlinks:</span>
-                  <span className="font-mono text-ink dark:text-dark-ink font-semibold">Navy Blue (true)</span>
-                </div>
-              </div>
-
+              )}
               <div className="mt-6 p-3 bg-surface-soft dark:bg-dark-surface rounded-sm text-xs text-muted dark:text-dark-muted leading-relaxed">
-                💡 Configuration matches Section 4.3.2 of the PRD exactly for consistent executive publication standards.
+                {presetInfo?.notes.map((n) => (
+                  <p key={n}>{n}</p>
+                ))}
+                <p className="mt-1">Defaults follow Section 4.3.2 of the PRD. Changes apply to the next conversion only.</p>
               </div>
             </div>
           </div>
         </div>
-      </main>
-    </div>
+      </PageShell>
   );
 };

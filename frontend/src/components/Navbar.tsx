@@ -1,15 +1,31 @@
-import React, { useState } from 'react';
-import { Layers, Shield, LogOut } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Layers, Shield, LogOut, Menu, X, UserRound } from 'lucide-react';
 import { ActiveSessionsModal } from './ActiveSessionsModal';
 import { ThemeToggle } from './ThemeToggle';
+import { BurnButton } from './BurnButton';
 
 interface NavbarProps {
   currentPath?: string;
   onLogout?: () => void;
 }
 
+const NAV_LINKS = [
+  { href: '/', label: 'Dashboard', short: 'Dashboard' },
+  { href: '/pandoc', label: 'Pandoc PDF', short: 'Pandoc' },
+  { href: '/monitor', label: 'Host Monitor', short: 'Monitor' },
+  { href: '/scrubber', label: 'Metadata Scrubber', short: 'Scrubber' },
+  { href: '/redactor', label: 'Secret Redactor', short: 'Redactor' },
+  { href: '/pdf-to-markdown', label: 'PDF to Markdown', short: 'PDF → MD' },
+] as const;
+
+const iconButton =
+  'inline-flex items-center justify-center gap-1.5 h-10 min-w-10 px-2.5 rounded-sm text-sm font-medium text-ink dark:text-dark-ink hover:bg-surface-strong dark:hover:bg-dark-surface transition-colors cursor-pointer';
+
 export const Navbar: React.FC<NavbarProps> = ({ currentPath = '/', onLogout }) => {
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const accountRef = useRef<HTMLDivElement>(null);
 
   const handleLogout = async () => {
     try {
@@ -24,74 +40,144 @@ export const Navbar: React.FC<NavbarProps> = ({ currentPath = '/', onLogout }) =
     }
   };
 
+  // Close the account menu on outside click or Escape.
+  useEffect(() => {
+    if (!accountOpen) return;
+    const onPointer = (e: MouseEvent) => {
+      if (accountRef.current && !accountRef.current.contains(e.target as Node)) {
+        setAccountOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setAccountOpen(false);
+    };
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [accountOpen]);
+
+  const linkClass = (href: string) =>
+    currentPath === href
+      ? 'text-ink dark:text-dark-ink font-semibold'
+      : 'text-muted dark:text-dark-muted hover:text-ink dark:hover:text-dark-ink';
+
   return (
     <>
-      <header className="h-20 bg-white dark:bg-dark-card border-b border-hairline-soft dark:border-dark-hairline px-6 md:px-10 flex items-center justify-between sticky top-0 z-50 transition-colors">
-        <a href="/" className="flex items-center gap-3 no-underline text-rausch font-bold text-lg">
-          <div className="w-9 h-9 rounded-full bg-rausch text-white flex items-center justify-center shadow-xs">
-            <Layers size={20} />
-          </div>
-          <span className="text-ink dark:text-dark-ink tracking-tight font-semibold">Disposable Workspace</span>
-          <span className="hidden sm:inline-block bg-surface-strong dark:bg-dark-surface text-muted dark:text-dark-muted text-xs font-semibold px-2.5 py-0.5 rounded-full">
-            Zero-Footprint
-          </span>
-        </a>
-
-        <nav className="flex items-center gap-8 h-full">
+      <header className="sticky top-0 z-50 bg-white dark:bg-dark-card border-b border-hairline-soft dark:border-dark-hairline transition-colors">
+        <div className="h-16 max-w-6xl mx-auto px-4 sm:px-6 flex items-center justify-between gap-4">
           <a
             href="/"
-            className={`flex items-center h-full px-1 text-[15px] font-medium transition-colors relative ${
-              currentPath === '/'
-                ? 'text-ink dark:text-dark-ink font-semibold after:content-[""] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-ink dark:after:bg-dark-ink'
-                : 'text-muted dark:text-dark-muted hover:text-ink dark:hover:text-dark-ink'
-            }`}
+            className="flex items-center gap-2.5 no-underline shrink-0"
+            aria-label="Disposable Workspace, home"
           >
-            Dashboard
+            <span className="w-8 h-8 rounded-full bg-rausch text-white flex items-center justify-center">
+              <Layers size={18} />
+            </span>
+            <span className="text-ink dark:text-dark-ink tracking-tight font-semibold text-base hidden sm:inline lg:hidden xl:inline">
+              Disposable Workspace
+            </span>
           </a>
-          <a
-            href="/pandoc"
-            className={`flex items-center h-full px-1 text-[15px] font-medium transition-colors relative ${
-              currentPath === '/pandoc'
-                ? 'text-ink dark:text-dark-ink font-semibold after:content-[""] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-ink dark:after:bg-dark-ink'
-                : 'text-muted dark:text-dark-muted hover:text-ink dark:hover:text-dark-ink'
-            }`}
-          >
-            Pandoc PDF
-          </a>
-          <a
-            href="/monitor"
-            className={`flex items-center h-full px-1 text-[15px] font-medium transition-colors relative ${
-              currentPath === '/monitor'
-                ? 'text-ink dark:text-dark-ink font-semibold after:content-[""] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-ink dark:after:bg-dark-ink'
-                : 'text-muted dark:text-dark-muted hover:text-ink dark:hover:text-dark-ink'
-            }`}
-          >
-            Host Monitor
-          </a>
-        </nav>
 
-        <div className="flex items-center gap-2 sm:gap-3">
-          <ThemeToggle />
+          <nav aria-label="Primary" className="hidden lg:flex items-center gap-4 xl:gap-6 h-full">
+            {NAV_LINKS.map((l) => (
+              <a
+                key={l.href}
+                href={l.href}
+                aria-label={l.label}
+                aria-current={currentPath === l.href ? 'page' : undefined}
+                className={`relative flex items-center h-full text-sm font-medium whitespace-nowrap transition-colors ${linkClass(l.href)} ${
+                  currentPath === l.href
+                    ? 'after:content-[""] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-ink dark:after:bg-dark-ink'
+                    : ''
+                }`}
+              >
+                <span className="2xl:hidden">{l.short}</span>
+                <span className="hidden 2xl:inline">{l.label}</span>
+              </a>
+            ))}
+          </nav>
 
-          <button
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-ink dark:text-dark-ink rounded-full hover:bg-surface-strong dark:hover:bg-dark-surface transition-colors cursor-pointer"
-            onClick={() => setSessionsOpen(true)}
-            title="Inspect Active Sessions"
-          >
-            <Shield size={16} className="text-muted dark:text-dark-muted" />
-            <span className="hidden sm:inline">Active Sessions</span>
-          </button>
-
-          <button
-            className="flex items-center gap-1.5 h-10 px-3.5 text-sm font-semibold text-ink dark:text-dark-ink bg-white dark:bg-dark-surface border border-hairline dark:border-dark-border hover:border-ink dark:hover:border-dark-ink hover:bg-surface-soft dark:hover:bg-dark-surface-hover rounded-sm transition-all cursor-pointer"
-            onClick={handleLogout}
-          >
-            <LogOut size={15} />
-            <span>Sign Out</span>
-          </button>
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <ThemeToggle />
+            <BurnButton />
+            <div className="relative" ref={accountRef}>
+              <button
+                type="button"
+                className={iconButton}
+                aria-haspopup="menu"
+                aria-expanded={accountOpen}
+                aria-label="Account menu"
+                onClick={() => setAccountOpen((o) => !o)}
+              >
+                <UserRound size={18} />
+              </button>
+              {accountOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 mt-2 w-52 bg-white dark:bg-dark-card border border-hairline-soft dark:border-dark-hairline rounded-sm shadow-airbnb py-1 z-50"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full flex items-center gap-2 px-3 h-10 text-sm text-ink dark:text-dark-ink hover:bg-surface-soft dark:hover:bg-dark-surface-hover text-left cursor-pointer"
+                    onClick={() => {
+                      setAccountOpen(false);
+                      setSessionsOpen(true);
+                    }}
+                  >
+                    <Shield size={16} className="text-muted dark:text-dark-muted" />
+                    Active Sessions
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full flex items-center gap-2 px-3 h-10 text-sm text-ink dark:text-dark-ink hover:bg-surface-soft dark:hover:bg-dark-surface-hover text-left cursor-pointer"
+                    onClick={handleLogout}
+                  >
+                    <LogOut size={16} className="text-muted dark:text-dark-muted" />
+                    Sign Out
+                  </button>
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              className={`${iconButton} lg:hidden`}
+              aria-expanded={menuOpen}
+              aria-controls="mobile-nav"
+              onClick={() => setMenuOpen((o) => !o)}
+            >
+              {menuOpen ? <X size={18} /> : <Menu size={18} />}
+              <span>Menu</span>
+            </button>
+          </div>
         </div>
-      </header>
 
+        {menuOpen && (
+          <nav
+            id="mobile-nav"
+            aria-label="Primary"
+            className="lg:hidden border-t border-hairline-soft dark:border-dark-hairline bg-white dark:bg-dark-card px-4 py-2"
+          >
+            {NAV_LINKS.map((l) => (
+              <a
+                key={l.href}
+                href={l.href}
+                onClick={() => setMenuOpen(false)}
+                aria-current={currentPath === l.href ? 'page' : undefined}
+                className={`flex items-center h-11 px-2 text-[15px] rounded-sm ${linkClass(l.href)} ${
+                  currentPath === l.href ? 'bg-surface-soft dark:bg-dark-surface' : ''
+                }`}
+              >
+                {l.label}
+              </a>
+            ))}
+          </nav>
+        )}
+      </header>
       <ActiveSessionsModal
         isOpen={sessionsOpen}
         onClose={() => setSessionsOpen(false)}

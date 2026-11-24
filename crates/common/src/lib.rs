@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthStatusResponse {
@@ -54,6 +55,52 @@ pub struct ActiveSessionsResponse {
 pub struct PandocConvertRequest {
     pub markdown: String,
     pub filename: Option<String>,
+    /// Optional per-request overrides of the Pandoc Preset Specs.
+    #[serde(default)]
+    pub preset: Option<PandocPresetOverrides>,
+}
+
+/// Per-request overrides. Every field is optional; unset fields use the server default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PandocPresetOverrides {
+    #[serde(default)]
+    pub paper_size: Option<String>,
+    #[serde(default)]
+    pub margin_x: Option<String>,
+    #[serde(default)]
+    pub margin_y: Option<String>,
+    #[serde(default)]
+    pub font_size: Option<String>,
+    #[serde(default)]
+    pub line_height: Option<f64>,
+    #[serde(default)]
+    pub link_color: Option<String>,
+    #[serde(default)]
+    pub main_font: Option<String>,
+}
+
+/// Fully resolved preset values.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PandocPresetValues {
+    pub paper_size: String,
+    pub margin_x: String,
+    pub margin_y: String,
+    pub font_size: String,
+    pub line_height: f64,
+    pub link_color: String,
+    pub main_font: Option<String>,
+}
+
+/// Response of `GET /api/apps/pandoc/preset`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PandocPresetInfo {
+    /// Active engine: `typst` or the LaTeX engine name (e.g. `pdflatex`).
+    pub engine: String,
+    pub defaults: PandocPresetValues,
+    pub paper_sizes: Vec<String>,
+    pub link_colors: Vec<String>,
+    /// Notes about how a parameter is mapped for the active engine.
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,9 +145,198 @@ pub struct HostMetrics {
     pub timestamp: i64,
 }
 
+// --- Scrubber ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScrubCategoryCount {
+    pub category: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScrubReport {
+    pub file_kind: String,
+    pub removed: Vec<ScrubCategoryCount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScrubEphemeralResponse {
+    pub token: String,
+    pub download_url: String,
+    pub filename: String,
+    pub report: ScrubReport,
+    pub expires_in_secs: u64,
+}
+
+// --- Redactor ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RedactRequest {
+    pub text: String,
+    #[serde(default)]
+    pub categories: Option<Vec<String>>,
+    #[serde(default)]
+    pub custom_words: Vec<String>,
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RedactResponse {
+    pub text: String,
+    pub counts: BTreeMap<String, usize>,
+}
+
+// --- JWT ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JwtInspectRequest {
+    pub token: String,
+    #[serde(default)]
+    pub secret: Option<String>,
+    #[serde(default)]
+    pub redact: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClaimTime {
+    pub claim: String,
+    pub raw: serde_json::Value,
+    pub iso: Option<String>,
+    pub valid: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenStatus {
+    Active,
+    Expired,
+    NotYetValid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SignatureCheck {
+    NotRequested,
+    Valid,
+    Invalid,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JwtInspectResult {
+    pub header: serde_json::Value,
+    pub payload: serde_json::Value,
+    pub header_pretty: String,
+    pub payload_pretty: String,
+    pub times: Vec<ClaimTime>,
+    pub status: TokenStatus,
+    pub signature: SignatureCheck,
+    pub warnings: Vec<String>,
+}
+
+// --- Burn ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CategoryStat {
+    pub category: String,
+    pub entries: u64,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FailedItem {
+    pub category: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AuditReport {
+    pub verified: bool,
+    pub incomplete: bool,
+    pub before: Vec<CategoryStat>,
+    pub after: Vec<CategoryStat>,
+    pub total_bytes_before: u64,
+    pub remaining_bytes: u64,
+    pub remaining_categories: Vec<CategoryStat>,
+    pub removed_items: u64,
+    pub failed_items: Vec<FailedItem>,
+    pub duration_ms: u64,
+    pub timestamp_utc: String,
+    pub warnings: Vec<String>,
+}
+
+// --- PDF to Markdown ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PdfConversionResult {
+    pub markdown: String,
+    pub pages: u32,
+    pub headings: u32,
+    pub warnings: Vec<String>,
+    /// UUID of the Ephemeral Download; only present when `?download=true` and conversion succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PdfLimits {
+    pub max_bytes: u64,
+    pub max_pages: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PdfApiError {
+    /// Always `false`.
+    pub success: bool,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PdfMcpResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub markdown: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
+    pub pages: u32,
+    pub headings: u32,
+    pub warnings: Vec<String>,
+    pub truncated: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_pdf_dto_serde() {
+        let r = PdfConversionResult {
+            markdown: "# A\n".into(),
+            pages: 1,
+            headings: 1,
+            warnings: vec![],
+            download_token: None,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("download_token"));
+        assert_eq!(serde_json::from_str::<PdfConversionResult>(&json).unwrap(), r);
+
+        let m = PdfMcpResult {
+            markdown: None,
+            preview: Some("p".into()),
+            download_url: Some("/u".into()),
+            pages: 2,
+            headings: 0,
+            warnings: vec![],
+            truncated: true,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("\"markdown\""));
+        assert_eq!(serde_json::from_str::<PdfMcpResult>(&json).unwrap(), m);
+    }
 
     #[test]
     fn test_host_metrics_serde_roundtrip() {

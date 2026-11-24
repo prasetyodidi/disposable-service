@@ -16,6 +16,10 @@ Welcome to the **Disposable Service Workspace** repository. This document serves
   - **In-Memory Session Tracker:** Tracks active sessions by IP address and User-Agent (`/api/sessions`).
   - **Document Engine (`/api/apps/pandoc`):** Subprocess wrapper around `pandoc` + `pdflatex` with an RAII Drop guard (`TempDirGuard`) guaranteeing instant cleanup of all temporary files.
   - **Host Monitoring Service (`/api/apps/monitor`):** Real-time read-only host telemetry stream (CPU cores, RAM, swap, disks, top processes) via Server-Sent Events (`/api/apps/monitor/stream`).
+  - **Metadata Scrubber (`/api/apps/scrubber`):** In-memory removal of GPS, device serials, author, thumbnails, XMP/IPTC from JPEG/PNG and Info dictionary/XMP from PDF (25 MB max). Returns a Scrub Report (categories/counts only). Clean file via `GET /api/apps/scrubber/download/:token` (Ephemeral Download, 5-min TTL, burn-after-reading). Errors: 401, 413, 415, 422.
+  - **Secret Redactor (`POST /api/apps/redactor`):** Replaces JWTs, bearer tokens, API keys, `.env` values, emails, phones, IPs, credit cards, and custom words with `[REDACTED:<category>]` (5 MB max; idempotent; preserves line count).
+  - **JWT Inspector (`POST /api/apps/jwt`):** Local decode of header/payload, claim time conversion, `alg: none` warning, optional HS256/384/512 verification and identity-claim redaction (8,192 chars max).
+  - **Burn Workspace (`POST /api/burn`, `GET /api/burn/events`):** Emergency destruction (see Section 4.5).
   - **Static File Serving:** Serves compiled Astro frontend assets (`dist/`) directly on port 80.
 - **Frontend (`frontend/`):** Built with **Astro 5** + **React 19** (CSR / React Islands) styled using **Tailwind CSS v4** (`@tailwindcss/vite`) adhering to the **Airbnb Inspired Design System** (Rausch `#ff385c`, clean white canvas, ink text `#222222`, 1-tier subtle shadow).
 - **Deployment Packaging (`deploy/`):** Multi-stage `Dockerfile` and `docker-compose.yml`.
@@ -98,6 +102,31 @@ cargo run -p disposable-server
 ```
 Then navigate to `http://localhost:8080`.
 
+### Running Poppler-Dependent Tests in Docker
+The PDF to Markdown tests need `pdftohtml`/`pdfinfo` (poppler-utils), Pandoc and Typst. `scripts/test-docker.sh` runs `cargo test --workspace` in a container built from `deploy/Dockerfile.test` that has them all:
+```bash
+scripts/test-docker.sh                 # whole workspace
+scripts/test-docker.sh pdf2md          # extra args (e.g. a name filter) go to cargo test
+scripts/test-docker.sh --shell         # interactive bash in the same container
+DOCKER_PLATFORM=linux/amd64 scripts/test-docker.sh pdf2md   # optional --platform for build and run
+```
+- The first run builds the image and compiles everything, which takes several minutes. The repo is bind-mounted at `/app`; named volumes `disposable-cargo-registry` and `disposable-cargo-target` keep dependencies and build output between runs.
+- The exit code of `cargo test` is passed through unchanged.
+- Plain local `cargo test --workspace` still runs every test that does not need poppler and skips the rest with a `SKIP` message.
+- The container sets `PDF_MD_REQUIRE_TOOLS=1`, so a test that would be skipped for a missing tool fails instead. Use this mode to confirm poppler-dependent tests really ran.
+
+### CI (GitHub Actions)
+- `.github/workflows/ci.yml` (triggers `workflow_dispatch` and `workflow_call` only) runs two parallel jobs on `ubuntu-latest`, amd64 only:
+  - `backend`: builds `deploy/Dockerfile.test` and runs `scripts/test-docker.sh`. Because the image sets `PDF_MD_REQUIRE_TOOLS=1`, a poppler-dependent test that would be skipped fails instead.
+  - `frontend`: in `frontend/`, runs `npm ci`, `npx tsc --noEmit`, `npm test`, `npm run build`.
+- There is no clippy and no `cargo fmt --check` step.
+- `TEST_CACHE_DIR` (absolute path): `scripts/test-docker.sh` bind-mounts `$TEST_CACHE_DIR/cargo-registry` and `$TEST_CACHE_DIR/cargo-target` instead of the named Docker volumes. CI points it at `${{ runner.temp }}/test-cache` so `actions/cache` can save and restore it.
+- Local equivalents: `scripts/test-docker.sh` (optionally with `TEST_CACHE_DIR=/tmp/disposable-test-cache`) for `backend`; `cd frontend && npm ci && npx tsc --noEmit && npm test && npm run build` for `frontend`.
+- Gating: `publish-image.yml` calls `ci.yml` as job `ci`. On push to `main`, tags `v*.*.*` and `workflow_dispatch`, `build-and-push` waits for `ci` to succeed. On pull requests, `ci` and `build-check` (image build without push) run in parallel, and nothing is pushed.
+- Emergency input `skip_ci` (`workflow_dispatch`): skips `ci` and still runs `build-and-push`, which writes a "CI skipped via skip_ci" warning to the run summary. Only maintainers with write access can dispatch it; use it only in emergencies.
+- Branch protection (manual repository setting, cannot be done from code): the repository owner should protect `main` with required status checks `ci / backend`, `ci / frontend` and `build-check`. Confirm the exact check names on the first run.
+- Re-run only failed jobs with `gh run rerun --failed <run-id>` or "Re-run failed jobs" in the UI. If a timing-sensitive or flaky test shows instability, loosen it through its environment variable.
+
 ---
 
 ## 4. Key Implementation Rules & Conventions
@@ -117,6 +146,82 @@ Then navigate to `http://localhost:8080`.
      - Corner rounding: `rounded-sm` (8px), `rounded-md` (14px), `rounded-full` (9999px).
 4. **CLI Remote Operations:**
    - The CLI embeds the compose file using `include_str!`. Keep `deploy/docker-compose.yml` self-contained and clean.
+5. **Privacy Logging Rule:**
+   - Never log file names, file contents, metadata values, redactor text, custom words, JWTs, payloads, or HMAC secrets (including error paths). Scrubber, Redactor, and JWT handlers must pass through the same auth extractor (401 when unauthenticated).
+
+### 4.5 Privacy Micro-Apps & Burn Workspace
+
+**API routes** (all registered in `create_api_router`, `crates/server/src/routes/mod.rs`):
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `POST` | `/api/apps/scrubber` | Scrub metadata from JPEG/PNG/PDF |
+| `GET` | `/api/apps/scrubber/download/:token` | One-time scrubbed file download |
+| `POST` | `/api/apps/redactor` | Redact secrets in text |
+| `POST` | `/api/apps/jwt` | Inspect a JWT |
+| `POST` | `/api/burn` | Trigger Burn Workspace, returns Audit Report |
+| `GET` | `/api/burn/events` | SSE `burn` event carrying the Audit Report |
+
+**Frontend pages:** `/scrubber` (Metadata Scrubber) and `/redactor` (tabs "JWT Inspector" and "Log & .env Redactor"), linked from Navbar and DashboardView. The Navbar shows the Burn button (confirmation dialog, or 3-second cancellable countdown in Demo mode), then an audit screen.
+
+**PDF to Markdown mini app** (`/pdf-to-markdown`, code in `crates/server/src/pdf2md/`):
+- Converts a text-layer PDF to Markdown in memory. Extraction runs `pdftohtml -xml` (poppler-utils) as a subprocess and Rust heuristics build headings, paragraphs, lists, code blocks, bold/italic, and strip repeated headers/footers. Temp files use an RAII guard.
+- Routes (auth + Burn gate like other micro-apps: 401 unauthenticated, 503 during burn):
+
+  | Method | Route | Purpose |
+  |--------|-------|---------|
+  | `POST` | `/api/apps/pdf-to-markdown` | Multipart `file` (+ optional `options` JSON: `page_from`, `page_to`, `page_breaks`, `strip_headers_footers`); `?download=true` adds a `download_token` |
+  | `GET` | `/api/apps/pdf-to-markdown/download/:token` | One-time Markdown download (5-min TTL, burn-after-reading) |
+  | `GET` | `/api/apps/pdf-to-markdown/limits` | Effective `max_bytes` and `max_pages` |
+
+- Limits: 25 MB upload (5 MB on Lambda), 300 pages, 30 s conversion timeout. Errors: 400, 401, 413, 415, 422, 503, 504.
+- Phase 1 scope: no tables, OCR, multi-column layout, or image extraction.
+- Known limitation: a heading whose text is entirely bold renders as `# **Title**`. Headings distinguished only by bold (not larger font size) are not detected.
+- Known limitation: PDFs from typesetters that hyphenate words at line ends without keeping the hyphen glyph in the text layer (e.g. Typst with hyphenation enabled) come out with those words split in two in the Markdown. No safe heuristic can rejoin them. PDFs whose text layer keeps the `-` are joined.
+- License note: poppler is GPL. It is only executed as a separate subprocess (`pdftohtml`), never linked into the Rust binary.
+- Env vars `PDF_MD_ENGINE`, `PDF_MD_MAX_BYTES`, `PDF_MD_MAX_RESPONSE_BYTES`: see Section 5.7.
+- Tests needing poppler: see "Running Poppler-Dependent Tests in Docker" in Section 3.
+
+**MCP tools:** see Section 4.6.
+
+**Burn Workspace behavior:**
+- **Managed_Storage scope:** `sessions`, `downloads`, `mcp_sessions` in `AppState` plus the workspace temp directory. Download buffers are zeroed before being freed, MCP SSE connections are closed, the JWT cookie is cleared.
+- **0-byte audit:** The Audit Report holds per-category entries/bytes before and after, duration (ms), and a UTC ISO 8601 timestamp, with no file names or user data. `verified: true` with `remaining_bytes: 0` is reported only after a successful re-verification (5 s limit); otherwise `verified: false`. Scope is Managed_Storage, not whole-process memory.
+- **Concurrency:** Concurrent burns execute once and share one report; micro-app requests return `503` during/after burn. Failed item deletions are listed and mark the report incomplete.
+- **Process exit:** After the report is sent the server exits with code `0` (2 s; 5 s if the client disconnects). A failed normal exit is forced with a non-zero code within 3 more seconds.
+- **`RESTART_POLICY`:** `deploy/docker-compose.yml` uses `restart: ${RESTART_POLICY:-on-failure}`. With `no` or `on-failure` (default) the container stays stopped after a burn. With `unless-stopped` or `always`, Docker restarts it and the Audit Report carries a warning.
+- The CLI `teardown` command must not call or depend on Burn Service.
+- Every new feature needs at least one success-path and one failure-path test run by `cargo test --workspace`.
+
+### 4.6 MCP Server
+
+Code: `crates/server/src/routes/mcp.rs`. User-facing reference: README "Model Context Protocol (MCP) Integration".
+
+- **Protocol:** JSON-RPC 2.0, version `2024-11-05`. Methods: `initialize`, `ping`, `tools/list`, `tools/call`, notification `notifications/initialized`; others return `-32601`. Only tools are implemented (no resources, no prompts).
+- **Transports:** `POST /api/mcp/sse` and `POST /api/mcp` answer in the HTTP body (the only mode that works on Lambda, whose Function URL is `BUFFERED`). Legacy SSE: `GET /api/mcp/sse` plus `POST /api/mcp/message?sessionId=<id>`. MCP request body limit: 36 MiB.
+- **Auth:** `Authorization: Bearer <token>` through `AuthenticatedSession` (401 otherwise). Long-lived tokens come from `POST /api/auth/token` / the Dashboard panel; type and label are embedded in the JWT so a fresh container can restore them. No revocation yet.
+- **Burn gate:** MCP routes return HTTP `503` (`burn_in_progress`) during or after a burn.
+
+| Tool | Required args | Optional args | Result |
+|------|---------------|---------------|--------|
+| `convert_markdown_to_pdf` | `markdown` | `filename`, `preset` (Pandoc Preset Specs) | Text + base64 `resource`; download `/api/apps/pandoc/download/<token>` |
+| `pdf_to_markdown` | `file_base64` | `page_from`, `page_to`, `page_breaks` (false), `strip_headers_footers` (true); unknown args rejected | `markdown`, `pages`, `headings`, `warnings`, `truncated`; > 100,000 chars: 2,000-char `preview` + `download_url` (auth required) |
+| `scrub_metadata` | `file_base64` (≤ 25 MB decoded) | `filename` | `download_url` (`/api/apps/scrubber/download/<token>`), `filename`, `report`, `expires_in_secs` |
+| `redact_secrets` | `text` (≤ 1,048,576 chars) | `categories` (`jwt`, `bearer`, `api_key`, `env_value`, `email`, `phone`, `ipv4`, `ipv6`, `credit_card`, `custom`), `custom_words` (≤ 100 × 256 chars), `format` (`auto`, `env`, `text`) | Same JSON as `POST /api/apps/redactor` |
+| `inspect_jwt` | `token` (≤ 8,192 chars) | `secret` (≤ 1,024 bytes, HS256/384/512), `redact` | Same JSON as `POST /api/apps/jwt` |
+| `get_host_metrics` | none | none | Host telemetry snapshot |
+| `burn_workspace_now` | `confirm: true` (boolean) | none | Burn Audit Report, then the process exits |
+
+- **Errors:** invalid arguments `-32602` naming the argument, with nothing executed or stored; `pdf_to_markdown` document errors `-32000` with `data.code` (`not_a_pdf`, `corrupt_pdf`, `encrypted_pdf`, `no_text_layer`, `too_many_pages`, `page_from_out_of_range`, `output_too_large`, `timeout`, `engine_unavailable`); internal failures and failed burns `-32603`; content errors of the older tools return `isError: true`; a second burn while one runs returns "penghancuran sedang berlangsung".
+- **Downloads:** all are relative, one-time, 5-minute TTL; only the PDF-to-Markdown download requires auth.
+- **Lambda sizing:** the Function URL payload limit (about 6 MB) means base64 files above about 4.4 MB cannot be sent in one call on Lambda.
+- **Rules when changing tools:**
+  - Keep the schema in `tools/list` and the argument validation in the `call_*` function in sync; tool descriptions are what agents read, so state limits, defaults and allowed values there.
+  - REST and MCP must call the same core function and return identical data (parity property tests exist for `redact_secrets`, `inspect_jwt` and `pdf_to_markdown`).
+  - Validate every argument before doing work; never log arguments, file contents, tokens or secrets.
+  - Descriptions and schemas live in `tools_list_json` in `routes/mcp.rs`. Limits that depend on configuration (the `pdf_to_markdown` size) are filled in from `AppState` at request time.
+  - `privacy/tests/unit_mcp.rs` checks that the `redact_secrets` enums match `Category::ALL` and `Format::parse`; `pdf2md/tests/unit_mcp.rs` checks that `pdf_to_markdown` reports the configured limit.
+  - Update this section, the README MCP section, and those tests.
 
 ---
 
@@ -305,6 +410,10 @@ These are set in `docker-compose.yml` and can be overridden at deploy-time:
 | `PANDOC_BIN` | `pandoc` | Path/name of the Pandoc binary |
 | `PANDOC_PDF_ENGINE` | `pdflatex` | LaTeX engine used by Pandoc for PDF output |
 | `DISPOSABLE_IMAGE` | _(from compose)_ | Override image reference at pull-time |
+| `RESTART_POLICY` | `on-failure` | Docker restart policy; `unless-stopped`/`always` restart the container after a burn |
+| `PDF_MD_ENGINE` | `poppler` | Extraction engine for PDF to Markdown. Unknown values stop the server at startup before the port opens |
+| `PDF_MD_MAX_BYTES` | `26214400` (25 MB; `5242880` / 5 MB in the Lambda image) | Max PDF upload size in bytes. Must be a positive integer; values above 25 MB are capped at 25 MB; invalid values stop the server at startup |
+| `PDF_MD_MAX_RESPONSE_BYTES` | unlimited (`5767168` in the Lambda image) | Max serialized JSON response size; larger results return `422 output_too_large`. Empty string counts as unset |
 
 ---
 

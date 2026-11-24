@@ -1,13 +1,11 @@
 import React from 'react';
-import { FileText, ArrowRight, ShieldCheck, Cpu, HardDrive, Activity } from 'lucide-react';
-import { Navbar } from './Navbar';
+import { FileText, ArrowRight, ShieldCheck, Cpu, HardDrive, Activity, FileX, EyeOff, FileDown } from 'lucide-react';
+import { PageShell } from './PageShell';
+import { McpTokensPanel } from './McpTokensPanel';
 
 export const DashboardView: React.FC = () => {
   return (
-    <div className="min-h-screen bg-surface-soft dark:bg-dark-canvas flex flex-col transition-colors">
-      <Navbar currentPath="/" />
-
-      <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-10">
+    <PageShell currentPath="/">
         {/* Hero banner */}
         <div className="mb-10">
           <div className="inline-flex items-center gap-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 text-xs font-semibold px-3 py-1 rounded-full mb-3 border border-emerald-200 dark:border-emerald-800">
@@ -96,6 +94,114 @@ export const DashboardView: React.FC = () => {
             </div>
           </div>
 
+          {/* Metadata Scrubber Card */}
+          <div className="bg-white dark:bg-dark-card rounded-md shadow-airbnb hover:shadow-airbnb-hover transition-all duration-200 p-6 flex flex-col justify-between border border-hairline-soft dark:border-dark-hairline group">
+            <div>
+              <div className="flex items-start justify-between mb-4">
+                <div className="w-12 h-12 rounded-sm bg-rose-50 dark:bg-rose-950/40 text-rausch flex items-center justify-center">
+                  <FileX size={24} />
+                </div>
+                <span className="bg-surface-strong dark:bg-dark-surface text-muted dark:text-dark-muted text-[11px] font-semibold px-2.5 py-1 rounded-full">
+                  App 3 • Privacy
+                </span>
+              </div>
+
+              <h2 className="text-lg font-bold text-ink dark:text-dark-ink mb-2 group-hover:text-rausch transition-colors">
+                Metadata Scrubber
+              </h2>
+              <p className="text-sm text-body dark:text-dark-body leading-relaxed mb-6">
+                Removes hidden metadata (EXIF, author, GPS) from images and documents entirely in memory before you share them.
+              </p>
+            </div>
+
+            <div>
+              <div className="pt-4 border-t border-hairline-soft dark:border-dark-hairline mb-5 flex items-center justify-between text-xs text-muted dark:text-dark-muted">
+                <span>Mode: in-memory</span>
+                <span>Retention: 0 seconds</span>
+              </div>
+
+              <a
+                href="/scrubber"
+                className="w-full h-11 bg-rausch hover:bg-rausch-active text-white text-sm font-semibold rounded-sm flex items-center justify-center gap-2 transition-colors no-underline cursor-pointer shadow-xs"
+              >
+                <span>Open Scrubber</span>
+                <ArrowRight size={16} />
+              </a>
+            </div>
+          </div>
+
+          {/* Secret Redactor Card */}
+          <div className="bg-white dark:bg-dark-card rounded-md shadow-airbnb hover:shadow-airbnb-hover transition-all duration-200 p-6 flex flex-col justify-between border border-hairline-soft dark:border-dark-hairline group">
+            <div>
+              <div className="flex items-start justify-between mb-4">
+                <div className="w-12 h-12 rounded-sm bg-rose-50 dark:bg-rose-950/40 text-rausch flex items-center justify-center">
+                  <EyeOff size={24} />
+                </div>
+                <span className="bg-surface-strong dark:bg-dark-surface text-muted dark:text-dark-muted text-[11px] font-semibold px-2.5 py-1 rounded-full">
+                  App 4 • Privacy
+                </span>
+              </div>
+
+              <h2 className="text-lg font-bold text-ink dark:text-dark-ink mb-2 group-hover:text-rausch transition-colors">
+                Secret Redactor
+              </h2>
+              <p className="text-sm text-body dark:text-dark-body leading-relaxed mb-6">
+                Inspects JWT tokens and masks secrets in logs locally, so sensitive values never leave the workspace.
+              </p>
+            </div>
+
+            <div>
+              <div className="pt-4 border-t border-hairline-soft dark:border-dark-hairline mb-5 flex items-center justify-between text-xs text-muted dark:text-dark-muted">
+                <span>Mode: local only</span>
+                <span>Retention: 0 seconds</span>
+              </div>
+
+              <a
+                href="/redactor"
+                className="w-full h-11 bg-rausch hover:bg-rausch-active text-white text-sm font-semibold rounded-sm flex items-center justify-center gap-2 transition-colors no-underline cursor-pointer shadow-xs"
+              >
+                <span>Open Redactor</span>
+                <ArrowRight size={16} />
+              </a>
+            </div>
+          </div>
+
+          {/* PDF to Markdown Card */}
+          <div className="bg-white dark:bg-dark-card rounded-md shadow-airbnb hover:shadow-airbnb-hover transition-all duration-200 p-6 flex flex-col justify-between border border-hairline-soft dark:border-dark-hairline group">
+            <div>
+              <div className="flex items-start justify-between mb-4">
+                <div className="w-12 h-12 rounded-sm bg-rose-50 dark:bg-rose-950/40 text-rausch flex items-center justify-center">
+                  <FileDown size={24} />
+                </div>
+                <span className="bg-surface-strong dark:bg-dark-surface text-muted dark:text-dark-muted text-[11px] font-semibold px-2.5 py-1 rounded-full">
+                  App 5 • Document
+                </span>
+              </div>
+
+              <h2 className="text-lg font-bold text-ink dark:text-dark-ink mb-2 group-hover:text-rausch transition-colors">
+                PDF to Markdown
+              </h2>
+              <p className="text-sm text-body dark:text-dark-body leading-relaxed mb-6">
+                Converts text-based PDFs into Markdown on the server, with nothing stored after the result is returned.
+              </p>
+            </div>
+
+            <div>
+              <div className="pt-4 border-t border-hairline-soft dark:border-dark-hairline mb-5 flex items-center justify-between text-xs text-muted dark:text-dark-muted">
+                <span>Mode: server-side</span>
+                <span>Retention: 0 seconds</span>
+              </div>
+
+              <a
+                href="/pdf-to-markdown"
+                className="w-full h-11 bg-rausch hover:bg-rausch-active text-white text-sm font-semibold rounded-sm flex items-center justify-center gap-2 transition-colors no-underline cursor-pointer shadow-xs"
+              >
+                <span>Open PDF to Markdown</span>
+                <ArrowRight size={16} />
+              </a>
+            </div>
+          </div>
+
           {/* Instance Health & Security Card */}
           <div className="bg-white dark:bg-dark-card rounded-md shadow-airbnb p-6 flex flex-col justify-between border border-hairline-soft dark:border-dark-hairline">
             <div>
@@ -128,7 +234,7 @@ export const DashboardView: React.FC = () => {
             </div>
           </div>
         </div>
-      </main>
-    </div>
+      <McpTokensPanel />
+    </PageShell>
   );
 };

@@ -192,7 +192,7 @@ mod tests {
         use crate::routes::create_api_router;
         use crate::state::AppState;
 
-        let app = create_api_router().with_state(AppState::new());
+        let app = { let st = AppState::new(); create_api_router(st.clone()).with_state(st) };
 
         // 1. Metrics endpoint without auth -> 401
         let res = app
@@ -246,7 +246,7 @@ mod tests {
         state.add_session(session).await;
         let (token, _) = create_jwt(session_id, &state.jwt_secret).unwrap();
 
-        let app = create_api_router().with_state(state);
+        let app = create_api_router(state.clone()).with_state(state);
 
         // 1. Metrics endpoint with auth -> 200 OK
         let res = app

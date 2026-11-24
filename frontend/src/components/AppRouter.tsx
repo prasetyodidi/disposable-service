@@ -3,11 +3,14 @@ import { DashboardView } from './DashboardView';
 import { PandocConverter } from './PandocConverter';
 import { ServerMonitor } from './ServerMonitor';
 import { FloatingMonitor } from './FloatingMonitor';
+import { MetadataScrubber } from './MetadataScrubber';
+import { RedactorPage } from './RedactorPage';
+import { PdfToMarkdown } from './PdfToMarkdown';
 import { SetupCard } from './SetupCard';
 import { LoginCard } from './LoginCard';
 
 interface AppRouterProps {
-  page: 'dashboard' | 'pandoc' | 'monitor' | 'setup' | 'login';
+  page: 'dashboard' | 'pandoc' | 'monitor' | 'scrubber' | 'redactor' | 'pdf-to-markdown' | 'setup' | 'login';
 }
 
 // Peta page prop → pathname yang diharapkan
@@ -15,6 +18,9 @@ const PAGE_PATH: Record<AppRouterProps['page'], string> = {
   dashboard: '/',
   pandoc: '/pandoc',
   monitor: '/monitor',
+  scrubber: '/scrubber',
+  redactor: '/redactor',
+  'pdf-to-markdown': '/pdf-to-markdown',
   setup: '/setup',
   login: '/login',
 };
@@ -127,6 +133,9 @@ export const AppRouter: React.FC<AppRouterProps> = ({ page }) => {
     <>
       {page === 'pandoc' && <PandocConverter />}
       {page === 'monitor' && <ServerMonitor />}
+      {page === 'scrubber' && <MetadataScrubber />}
+      {page === 'redactor' && <RedactorPage />}
+      {page === 'pdf-to-markdown' && <PdfToMarkdown />}
       {page === 'dashboard' && <DashboardView />}
       {page !== 'monitor' && <FloatingMonitor />}
     </>

@@ -1,6 +1,12 @@
 mod auth;
+#[allow(dead_code)]
+mod pdf2md;
+#[allow(dead_code)]
+mod privacy;
 mod routes;
 mod state;
+#[cfg(test)]
+mod test_support;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -25,7 +31,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let state = AppState::new();
+    // Invalid PDF_MD_* configuration must stop the process before the port opens.
+    let pdf_runtime = match crate::pdf2md::PdfRuntime::from_env() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("Konfigurasi PDF to Markdown tidak valid: {e}");
+            std::process::exit(2);
+        }
+    };
+    for w in &pdf_runtime.config.warnings {
+        tracing::warn!("{w}");
+    }
+
+    let state = AppState::new().with_pdf(pdf_runtime);
+    let burn = state.burn.clone();
+
+    // Sweep expired ephemeral downloads (buffers are zeroed on removal).
+    {
+        let sweep_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                tick.tick().await;
+                sweep_state.purge_expired_downloads().await;
+            }
+        });
+    }
 
     // CORS configuration for local development
     let cors = CorsLayer::new()
@@ -39,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, header::COOKIE]);
 
-    let api_router = create_api_router().layer(cors);
+    let api_router = create_api_router(state.clone()).layer(cors);
 
     // Static asset directory (Astro build output)
     let static_dir = std::env::var("STATIC_DIR")
@@ -165,12 +196,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => return Err(e.into()),
     };
 
-    axum::serve(
+    let serve = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await?;
+    .with_graceful_shutdown(shutdown_signal());
+
+    // The burn coordinator requests shutdown (after the report is delivered, or
+    // 5s after the trigger at the latest) and starts the OS-thread watchdog
+    // (exit code 1 after 3s). Returning from the second branch drops the server
+    // without waiting for keep-alive connections, so the process exits with 0.
+    tokio::select! {
+        result = serve => {
+            result?;
+        }
+        _ = burn.shutdown_requested() => {
+            info!("Burn complete; shutting down.");
+            // Test-only hook: block the normal shutdown path so the watchdog
+            // (which runs on its own OS thread) is the one ending the process.
+            if std::env::var_os("DISPOSABLE_TEST_BLOCK_SHUTDOWN").is_some() {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
 
     Ok(())
 }

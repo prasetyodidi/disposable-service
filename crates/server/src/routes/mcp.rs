@@ -17,6 +17,635 @@ pub struct McpQuery {
     pub session_id: Option<String>,
 }
 
+/// Result of a `tools/call` dispatch.
+///
+/// Legacy tools report failures inside `result.isError` (`Content`), while the
+/// new privacy tools can return a JSON-RPC `error` object (`RpcError`).
+pub(crate) enum ToolOutcome {
+    /// Tool content items and the `isError` flag.
+    Content(Vec<serde_json::Value>, bool),
+    /// JSON-RPC error object (`error.code` / `error.message`).
+    RpcError { code: i32, message: String },
+    /// JSON-RPC error object with an additional `error.data` payload.
+    RpcErrorData {
+        code: i32,
+        message: String,
+        data: serde_json::Value,
+    },
+}
+
+/// JSON-RPC code for invalid arguments.
+pub(crate) const RPC_INVALID_PARAMS: i32 = -32602;
+/// JSON-RPC code for internal failures (e.g. burn failure).
+pub(crate) const RPC_INTERNAL_ERROR: i32 = -32603;
+/// JSON-RPC implementation-defined server error (document/engine failures).
+pub(crate) const RPC_SERVER_ERROR: i32 = -32000;
+
+impl ToolOutcome {
+    /// -32602 error whose message names the offending argument.
+    pub(crate) fn invalid_arg(arg: &str, detail: &str) -> Self {
+        ToolOutcome::RpcError {
+            code: RPC_INVALID_PARAMS,
+            message: format!("Invalid params: argument '{}' {}", arg, detail),
+        }
+    }
+
+    /// -32603 internal error.
+    pub(crate) fn internal(message: impl Into<String>) -> Self {
+        ToolOutcome::RpcError {
+            code: RPC_INTERNAL_ERROR,
+            message: message.into(),
+        }
+    }
+
+    /// Successful single-text result.
+    #[allow(dead_code)]
+    pub(crate) fn text(text: String) -> Self {
+        ToolOutcome::Content(vec![serde_json::json!({ "type": "text", "text": text })], false)
+    }
+}
+
+// --- Dispatch hooks for new tools (bodies filled in by tasks 8.2 / 8.3) ---
+
+/// Max characters for `redact_secrets.text`.
+const MCP_MAX_TEXT_CHARS: usize = 1_048_576;
+/// Max decoded bytes for `scrub_metadata.file_base64`.
+const MCP_MAX_FILE_BYTES: usize = 26_214_400;
+/// TTL (seconds) of the scrubbed file download.
+const MCP_SCRUB_TTL_SECS: u64 = 300;
+
+/// Arguments must be a JSON object (a missing `arguments` is treated as empty).
+fn args_object(
+    args: Option<&serde_json::Value>,
+) -> Result<serde_json::Map<String, serde_json::Value>, ToolOutcome> {
+    match args {
+        None | Some(serde_json::Value::Null) => Ok(serde_json::Map::new()),
+        Some(serde_json::Value::Object(m)) => Ok(m.clone()),
+        Some(_) => Err(ToolOutcome::invalid_arg("arguments", "must be an object")),
+    }
+}
+
+/// Required string argument.
+fn req_str<'a>(
+    map: &'a serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Result<&'a str, ToolOutcome> {
+    match map.get(name) {
+        None | Some(serde_json::Value::Null) => Err(ToolOutcome::invalid_arg(name, "is required")),
+        Some(serde_json::Value::String(s)) => Ok(s.as_str()),
+        Some(_) => Err(ToolOutcome::invalid_arg(name, "must be a string")),
+    }
+}
+
+/// Optional string argument.
+fn opt_str<'a>(
+    map: &'a serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Result<Option<&'a str>, ToolOutcome> {
+    match map.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(s)) => Ok(Some(s.as_str())),
+        Some(_) => Err(ToolOutcome::invalid_arg(name, "must be a string")),
+    }
+}
+
+/// Optional array of strings.
+fn opt_str_array(
+    map: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Result<Option<Vec<String>>, ToolOutcome> {
+    match map.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(|v| v.as_str().map(str::to_string))
+            .collect::<Option<Vec<_>>>()
+            .map(Some)
+            .ok_or_else(|| ToolOutcome::invalid_arg(name, "must be an array of strings")),
+        Some(_) => Err(ToolOutcome::invalid_arg(name, "must be an array of strings")),
+    }
+}
+
+/// Optional integer argument with minimum 1, as `u32`.
+#[allow(dead_code)]
+fn opt_u32_min1(
+    map: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Result<Option<u32>, ToolOutcome> {
+    match map.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(n)) => match n.as_u64() {
+            Some(v) if v >= 1 && v <= u32::MAX as u64 => Ok(Some(v as u32)),
+            _ => Err(ToolOutcome::invalid_arg(name, "must be an integer greater than or equal to 1")),
+        },
+        Some(_) => Err(ToolOutcome::invalid_arg(name, "must be an integer greater than or equal to 1")),
+    }
+}
+
+/// Optional boolean argument.
+#[allow(dead_code)]
+fn opt_bool(
+    map: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Result<Option<bool>, ToolOutcome> {
+    match map.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(ToolOutcome::invalid_arg(name, "must be a boolean")),
+    }
+}
+
+/// Task 7.2: validate args, call `pdf2md::convert`, shape the result.
+///
+/// Nothing user-supplied (base64, options, converted text) is logged.
+async fn call_pdf_to_markdown(state: &AppState, args: Option<&serde_json::Value>) -> ToolOutcome {
+    use crate::pdf2md::config::DOWNLOAD_TTL_SECS;
+    use crate::pdf2md::convert::{convert, shape_mcp_result, ConvertInput};
+    use crate::pdf2md::error::ConvertError;
+    use base64::prelude::BASE64_STANDARD;
+    use base64::Engine;
+
+    const KNOWN: [&str; 5] = [
+        "file_base64",
+        "page_from",
+        "page_to",
+        "page_breaks",
+        "strip_headers_footers",
+    ];
+
+    let map = match args_object(args) {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    if let Some(unknown) = map.keys().find(|k| !KNOWN.contains(&k.as_str())) {
+        return ToolOutcome::invalid_arg(unknown, "is not a recognized argument");
+    }
+    let b64 = match req_str(&map, "file_base64") {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let page_from = match opt_u32_min1(&map, "page_from") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let page_to = match opt_u32_min1(&map, "page_to") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let page_breaks = match opt_bool(&map, "page_breaks") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let strip = match opt_bool(&map, "strip_headers_footers") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    if let (Some(f), Some(t)) = (page_from, page_to) {
+        if f > t {
+            return ToolOutcome::invalid_arg("page_from", "must be less than or equal to page_to");
+        }
+    }
+
+    let max_bytes = state.pdf.config.max_bytes;
+    let size_detail = format!("decoded size must be between 1 and {} bytes", max_bytes);
+    let b64 = b64.trim();
+    let max_encoded = (max_bytes.div_ceil(3) * 4) as usize;
+    if b64.len() > max_encoded {
+        return ToolOutcome::invalid_arg("file_base64", &size_detail);
+    }
+    let file = match BASE64_STANDARD.decode(b64) {
+        Ok(b) => b,
+        Err(_) => return ToolOutcome::invalid_arg("file_base64", "is not valid base64"),
+    };
+    if file.is_empty() || file.len() as u64 > max_bytes {
+        return ToolOutcome::invalid_arg("file_base64", &size_detail);
+    }
+
+    // Serialize the options and let `parse_options` validate them, like the REST path.
+    let mut opts = serde_json::Map::new();
+    if let Some(v) = page_from {
+        opts.insert("page_from".into(), v.into());
+    }
+    if let Some(v) = page_to {
+        opts.insert("page_to".into(), v.into());
+    }
+    if let Some(v) = page_breaks {
+        opts.insert("page_breaks".into(), v.into());
+    }
+    if let Some(v) = strip {
+        opts.insert("strip_headers_footers".into(), v.into());
+    }
+    let options_raw = match serde_json::to_vec(&serde_json::Value::Object(opts)) {
+        Ok(v) => v,
+        Err(_) => return ToolOutcome::internal("Terjadi kesalahan internal."),
+    };
+
+    let input = ConvertInput {
+        file,
+        options_raw: Some(options_raw),
+        extra_file_parts: 0,
+    };
+    let conversion = match convert(&state.pdf, input).await {
+        Ok(c) => c,
+        Err(ConvertError::Internal) => return ToolOutcome::internal(ConvertError::Internal.message()),
+        Err(e @ (ConvertError::BadOptions { .. } | ConvertError::BadRequest | ConvertError::FileRequired)) => {
+            return ToolOutcome::RpcError {
+                code: RPC_INVALID_PARAMS,
+                message: format!("Invalid params: {}", e.message()),
+            }
+        }
+        Err(e) => {
+            return ToolOutcome::RpcErrorData {
+                code: RPC_SERVER_ERROR,
+                message: e.message(),
+                data: serde_json::json!({ "code": e.code_str() }),
+            }
+        }
+    };
+
+    // Store the Ephemeral_Download only when the result is truncated.
+    let needs_download = conversion.markdown.chars().count() > crate::pdf2md::convert::MCP_INLINE_MAX_CHARS;
+    let url = if needs_download {
+        let token = state
+            .store_ephemeral_download(
+                conversion.markdown.clone().into_bytes(),
+                "document.md".to_string(),
+                "text/markdown; charset=utf-8".to_string(),
+                DOWNLOAD_TTL_SECS,
+            )
+            .await;
+        Some(format!("/api/apps/pdf-to-markdown/download/{}", token))
+    } else {
+        None
+    };
+    let result = shape_mcp_result(&conversion, || url);
+    match serde_json::to_string(&result) {
+        Ok(s) => ToolOutcome::text(s),
+        Err(_) => ToolOutcome::internal("Terjadi kesalahan internal."),
+    }
+}
+
+/// Task 8.2: validate args, then call the shared redactor core.
+async fn call_redact_secrets(_state: &AppState, args: Option<&serde_json::Value>) -> ToolOutcome {
+    use crate::privacy::redactor::{redact, validate, Category, Format, RedactOptions};
+    use std::collections::BTreeSet;
+
+    let map = match args_object(args) {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    let text = match req_str(&map, "text") {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let chars = text.chars().count();
+    if chars == 0 || chars > MCP_MAX_TEXT_CHARS {
+        return ToolOutcome::invalid_arg(
+            "text",
+            &format!("must be between 1 and {} characters", MCP_MAX_TEXT_CHARS),
+        );
+    }
+
+    let categories: BTreeSet<Category> = match opt_str_array(&map, "categories") {
+        Err(e) => return e,
+        Ok(None) => Category::ALL.iter().copied().collect(),
+        Ok(Some(list)) => {
+            let mut set = BTreeSet::new();
+            for name in &list {
+                match Category::parse(name) {
+                    Some(c) => {
+                        set.insert(c);
+                    }
+                    None => {
+                        return ToolOutcome::invalid_arg("categories", "contains an unknown category")
+                    }
+                }
+            }
+            set
+        }
+    };
+    let custom_words = match opt_str_array(&map, "custom_words") {
+        Ok(w) => w.unwrap_or_default(),
+        Err(e) => return e,
+    };
+    let format = match opt_str(&map, "format") {
+        Err(e) => return e,
+        Ok(None) => Format::Auto,
+        Ok(Some(f)) => match Format::parse(f) {
+            Some(f) => f,
+            None => {
+                return ToolOutcome::invalid_arg("format", "must be one of: auto, env, text")
+            }
+        },
+    };
+
+    let opts = RedactOptions {
+        categories,
+        custom_words,
+        format,
+    };
+    if let Err(e) = validate(&opts) {
+        return ToolOutcome::invalid_arg("custom_words", &e.to_string());
+    }
+
+    let outcome = redact(text, &opts);
+    let response = disposable_common::RedactResponse {
+        text: outcome.text,
+        counts: outcome
+            .counts
+            .into_iter()
+            .map(|(c, n)| (c.as_str().to_string(), n))
+            .collect(),
+    };
+    match serde_json::to_string(&response) {
+        Ok(s) => ToolOutcome::text(s),
+        Err(e) => ToolOutcome::internal(format!("Failed to serialize result: {}", e)),
+    }
+}
+
+/// Task 8.2: validate args, then call the shared JWT core.
+async fn call_inspect_jwt(_state: &AppState, args: Option<&serde_json::Value>) -> ToolOutcome {
+    use crate::privacy::jwt_inspector::{inspect, InspectOptions, JwtError, MAX_TOKEN_CHARS};
+    use zeroize::Zeroizing;
+
+    let map = match args_object(args) {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    let token = match req_str(&map, "token") {
+        Ok(t) => Zeroizing::new(t.to_string()),
+        Err(e) => return e,
+    };
+    let chars = token.chars().count();
+    if chars == 0 || chars > MAX_TOKEN_CHARS {
+        return ToolOutcome::invalid_arg(
+            "token",
+            &format!("must be between 1 and {} characters", MAX_TOKEN_CHARS),
+        );
+    }
+    let secret = match opt_str(&map, "secret") {
+        Ok(s) => s.map(|s| Zeroizing::new(s.to_string())),
+        Err(e) => return e,
+    };
+    let redact = match map.get("redact") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(_) => return ToolOutcome::invalid_arg("redact", "must be a boolean"),
+    };
+
+    let now_unix = chrono::Utc::now().timestamp();
+    let result = {
+        let opts = InspectOptions {
+            hmac_secret: secret.as_ref().map(|s| s.as_bytes()),
+            redact,
+        };
+        inspect(token.as_str(), &opts, now_unix)
+    };
+    drop(token);
+    drop(secret);
+
+    match result {
+        Ok(r) => match serde_json::to_string(&r) {
+            Ok(s) => ToolOutcome::text(s),
+            Err(e) => ToolOutcome::internal(format!("Failed to serialize result: {}", e)),
+        },
+        Err(JwtError::SecretLength) => ToolOutcome::invalid_arg("secret", &JwtError::SecretLength.to_string()),
+        Err(e) => ToolOutcome::Content(
+            vec![serde_json::json!({ "type": "text", "text": e.to_string() })],
+            true,
+        ),
+    }
+}
+
+/// Task 8.2: validate args, decode base64, scrub, store as ephemeral download.
+async fn call_scrub_metadata(state: &AppState, args: Option<&serde_json::Value>) -> ToolOutcome {
+    use crate::privacy::scrubber::{scrub, FileKind, ScrubError};
+    use base64::prelude::BASE64_STANDARD;
+    use base64::Engine;
+
+    let map = match args_object(args) {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    let b64 = match req_str(&map, "file_base64") {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let filename_arg = match opt_str(&map, "filename") {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+
+    // Reject oversize input before allocating the decoded buffer.
+    let max_encoded = MCP_MAX_FILE_BYTES.div_ceil(3) * 4;
+    let b64 = b64.trim();
+    if b64.len() > max_encoded {
+        return ToolOutcome::invalid_arg(
+            "file_base64",
+            &format!("decoded size must be between 1 and {} bytes", MCP_MAX_FILE_BYTES),
+        );
+    }
+    let bytes = match BASE64_STANDARD.decode(b64) {
+        Ok(b) => b,
+        Err(_) => return ToolOutcome::invalid_arg("file_base64", "is not valid base64"),
+    };
+    if bytes.is_empty() || bytes.len() > MCP_MAX_FILE_BYTES {
+        return ToolOutcome::invalid_arg(
+            "file_base64",
+            &format!("decoded size must be between 1 and {} bytes", MCP_MAX_FILE_BYTES),
+        );
+    }
+
+    let out = match scrub(&bytes) {
+        Ok(o) => o,
+        Err(e) => {
+            let msg = match e {
+                ScrubError::TooLarge => "File too large".to_string(),
+                ScrubError::UnsupportedType => {
+                    "Unsupported file type (only JPEG, PNG and PDF)".to_string()
+                }
+                ScrubError::Unreadable(reason) => format!("File cannot be read: {}", reason),
+                ScrubError::EncryptedPdf => "Encrypted PDF is not supported".to_string(),
+            };
+            return ToolOutcome::Content(
+                vec![serde_json::json!({ "type": "text", "text": msg })],
+                true,
+            );
+        }
+    };
+
+    let (ext, content_type) = match out.kind {
+        FileKind::Jpeg => ("jpg", "image/jpeg"),
+        FileKind::Png => ("png", "image/png"),
+        FileKind::Pdf => ("pdf", "application/pdf"),
+    };
+    // Keep only a safe basename; fall back to a generic name.
+    let cleaned: String = filename_arg
+        .map(|f| {
+            f.rsplit(['/', '\\'])
+                .next()
+                .unwrap_or("")
+                .chars()
+                .filter(|c| !c.is_control() && *c != '"')
+                .take(128)
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    let filename = if cleaned.trim().is_empty() {
+        format!("scrubbed.{}", ext)
+    } else {
+        cleaned
+    };
+
+    let token = state
+        .store_ephemeral_download(
+            out.bytes,
+            filename.clone(),
+            content_type.to_string(),
+            MCP_SCRUB_TTL_SECS,
+        )
+        .await;
+    let response = disposable_common::ScrubEphemeralResponse {
+        download_url: format!("/api/apps/scrubber/download/{}", token),
+        token,
+        filename,
+        report: out.report,
+        expires_in_secs: MCP_SCRUB_TTL_SECS,
+    };
+    match serde_json::to_string(&response) {
+        Ok(s) => ToolOutcome::text(s),
+        Err(e) => ToolOutcome::internal(format!("Failed to serialize result: {}", e)),
+    }
+}
+
+/// Task 8.3: require `confirm == true`, then run the burn coordinator.
+///
+/// On success returns a [`BurnDelivery`] holding a clone of the caller's SSE
+/// `Sender` (taken BEFORE the burn, because the burn clears `mcp_sessions`).
+/// The caller must deliver the result and then call [`BurnDelivery::finish`].
+async fn call_burn_workspace_now(
+    state: &AppState,
+    args: Option<&serde_json::Value>,
+    session_id: Option<&str>,
+) -> (ToolOutcome, Option<BurnDelivery>) {
+    let map = match args_object(args) {
+        Ok(m) => m,
+        Err(e) => return (e, None),
+    };
+    match map.get("confirm") {
+        Some(serde_json::Value::Bool(true)) => {}
+        _ => {
+            return (
+                ToolOutcome::RpcError {
+                    code: RPC_INVALID_PARAMS,
+                    message: "Invalid params: argument 'confirm' must be boolean true to confirm the permanent burn"
+                        .to_string(),
+                },
+                None,
+            )
+        }
+    }
+
+    // No await between this check and the `run_or_join` call, so the check
+    // and the start of the burn cannot interleave with another caller.
+    if state.burn.is_burning() {
+        return (
+            ToolOutcome::RpcError {
+                code: RPC_INTERNAL_ERROR,
+                message: "penghancuran sedang berlangsung".to_string(),
+            },
+            None,
+        );
+    }
+
+    let sender = match session_id {
+        Some(sid) => state.mcp_sessions.read().await.get(sid).cloned(),
+        None => None,
+    };
+    // `is_burning` was checked above; if the read lock yielded and another
+    // burn started meanwhile, report it instead of joining silently.
+    if state.burn.is_burning() {
+        return (
+            ToolOutcome::RpcError {
+                code: RPC_INTERNAL_ERROR,
+                message: "penghancuran sedang berlangsung".to_string(),
+            },
+            None,
+        );
+    }
+
+    // Run in a detached task so a client disconnect (which drops this
+    // future) cannot cancel the wipe midway.
+    let task_state = state.clone();
+    let report = match tokio::spawn(async move { task_state.burn.run_or_join(&task_state).await }).await {
+        Ok(r) => r,
+        Err(e) => {
+            return (ToolOutcome::internal(format!("Penghancuran terhenti: {}", e)), None);
+        }
+    };
+    if !report.verified || report.incomplete {
+        let steps: Vec<String> = report
+            .failed_items
+            .iter()
+            .map(|f| format!("{}: {}", f.category, f.reason))
+            .collect();
+        let message = if steps.is_empty() {
+            "Penghancuran gagal atau tidak selesai".to_string()
+        } else {
+            format!("Penghancuran gagal atau tidak selesai; langkah belum selesai: {}", steps.join("; "))
+        };
+        return (ToolOutcome::internal(message), None);
+    }
+
+    let outcome = match serde_json::to_string(&*report) {
+        Ok(s) => ToolOutcome::text(s),
+        Err(e) => return (ToolOutcome::internal(format!("Failed to serialize result: {}", e)), None),
+    };
+    (outcome, Some(BurnDelivery { sender }))
+}
+
+/// Pending delivery of a successful burn result.
+struct BurnDelivery {
+    /// Clone of the calling SSE session's sender (None for plain HTTP calls).
+    sender: Option<tokio::sync::mpsc::Sender<Event>>,
+}
+
+/// Max wait for the SSE event to be delivered before shutdown is scheduled.
+const BURN_SSE_DELIVERY_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+impl BurnDelivery {
+    /// SSE path: send the full result event through the cloned sender, drop it
+    /// so the stream ends after the event, wait (max 5s) for delivery, then
+    /// schedule shutdown. Runs in the background; never blocks the response.
+    fn finish(self, state: AppState, event: Option<Event>) {
+        tokio::spawn(async move {
+            if let (Some(tx), Some(event)) = (self.sender, event) {
+                let wait = async {
+                    if tx.send(event).await.is_err() {
+                        return; // receiver already gone
+                    }
+                    // Event is delivered once the stream has consumed the queue,
+                    // or the client disconnected (`closed`).
+                    let drained = async {
+                        while tx.capacity() < tx.max_capacity() {
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                    };
+                    tokio::select! {
+                        _ = drained => {}
+                        _ = tx.closed() => {}
+                    }
+                };
+                let _ = tokio::time::timeout(BURN_SSE_DELIVERY_WAIT, wait).await;
+                // tx dropped here: stream ends after the delivered event.
+            }
+            state.burn.schedule_shutdown(async {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            });
+        });
+    }
+}
+
 /// SSE transport endpoint for MCP
 pub async fn mcp_sse_handler(
     _auth: AuthenticatedSession,
@@ -64,6 +693,195 @@ pub async fn mcp_sse_handler(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// Note appended to every tool that returns a download link.
+const DOWNLOAD_NOTE: &str = "Download paths are relative: prefix them with this server's base URL. Each link works once and expires after 5 minutes.";
+
+/// The `tools/list` result. Descriptions and schemas are what agents read,
+/// so they state limits, defaults and allowed values. Keep them in sync with
+/// the argument validation in the `call_*` functions and with the README.
+fn tools_list_json(state: &AppState) -> serde_json::Value {
+    let pdf_max_bytes = state.pdf.config.max_bytes;
+    let pdf_max_mb = pdf_max_bytes as f64 / (1024.0 * 1024.0);
+    let pdf_max_pages = state.pdf.config.max_pages;
+    serde_json::json!({
+        "tools": [
+            {
+                "name": "convert_markdown_to_pdf",
+                "description": format!(
+                    "Convert Markdown text to a PDF with Pandoc (Typst engine on AWS Lambda, LaTeX in the Docker image). Defaults: A4, margins 2cm left/right and 1.8cm top/bottom, 10.5pt, line height 1.25, navy links; override them with `preset`. Returns a text item with the file name, size and a download path (/api/apps/pandoc/download/<token>, no Authorization needed), plus a `resource` item with the PDF as base64. {DOWNLOAD_NOTE}"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "markdown": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Markdown text to convert (must not be empty)"
+                        },
+                        "filename": {
+                            "type": "string",
+                            "description": "Output file name (default: document.pdf; .pdf is added if missing)"
+                        },
+                        "preset": {
+                            "type": "object",
+                            "description": "Optional Pandoc Preset Specs overrides. Unset fields use the defaults listed in the tool description. An invalid value makes the call fail with the reason.",
+                            "properties": {
+                                "paper_size": { "type": "string", "enum": ["a3", "a4", "a5", "letter", "legal"] },
+                                "margin_x": { "type": "string", "description": "Left/right margin: a number followed by cm, mm, in or pt, e.g. 2cm (max 10cm, 100mm, 4in or 300pt)" },
+                                "margin_y": { "type": "string", "description": "Top/bottom margin, same format as margin_x, e.g. 1.8cm" },
+                                "font_size": { "type": "string", "description": "Base font size from 6pt to 24pt, e.g. 10.5pt" },
+                                "line_height": { "type": "number", "minimum": 1.0, "maximum": 2.5 },
+                                "link_color": { "type": "string", "enum": ["navy", "black", "blue", "red", "green", "purple", "teal", "gray"] },
+                                "main_font": { "type": "string", "maxLength": 64, "description": "Font family name (letters, digits, spaces and hyphens only). Empty uses the engine default" }
+                            }
+                        }
+                    },
+                    "required": ["markdown"]
+                }
+            },
+            {
+                "name": "get_host_metrics",
+                "description": "Get a read-only snapshot of the host: CPU usage per core, RAM and swap, disks (mount point, total, used), uptime, and the top processes by CPU and memory. On AWS Lambda this describes the Lambda execution environment. Takes no arguments.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "redact_secrets",
+                "description": "Replace secrets in text, .env content or logs with [REDACTED:<category>], in memory. Line count is preserved and running it twice changes nothing. Returns JSON with the redacted `text` and `counts` per active category (0 when nothing matched). Unknown categories or formats are rejected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1048576,
+                            "description": "Text to redact (1 to 1,048,576 characters)"
+                        },
+                        "categories": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["jwt", "bearer", "api_key", "env_value", "email", "phone", "ipv4", "ipv6", "credit_card", "custom"]
+                            },
+                            "description": "Categories to redact (default: all). `custom` applies `custom_words`; `env_value` replaces the values of KEY=VALUE lines"
+                        },
+                        "custom_words": {
+                            "type": "array",
+                            "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+                            "maxItems": 100,
+                            "description": "Extra words or phrases to redact, matched exactly and case-sensitively (up to 100 words, 1 to 256 characters each). Used when the `custom` category is active"
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["auto", "env", "text"],
+                            "description": "Input format (default: auto). `env` keeps variable names and comments and replaces only values; `text` treats the input as free text"
+                        }
+                    },
+                    "required": ["text"]
+                }
+            },
+            {
+                "name": "inspect_jwt",
+                "description": "Decode a JWT on this server without contacting any third party. Returns JSON with the header and payload (raw and pretty-printed), exp/iat/nbf as ISO 8601 UTC, `status` (active, expired, not_yet_valid), `signature` (not_requested, valid, invalid, unsupported) and `warnings` (for example alg: none). A malformed token fails with a message naming the broken segment.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "token": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 8192,
+                            "description": "JWT to inspect (1 to 8,192 characters)"
+                        },
+                        "secret": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Optional HMAC secret (1 to 1,024 bytes) to verify HS256, HS384 or HS512 signatures. Other algorithms report `unsupported`"
+                        },
+                        "redact": {
+                            "type": "boolean",
+                            "description": "Replace the identity claims email, phone_number, phone, sub, name and preferred_username with [REDACTED:...] in the output (default: false)"
+                        }
+                    },
+                    "required": ["token"]
+                }
+            },
+            {
+                "name": "scrub_metadata",
+                "description": format!(
+                    "Remove sensitive metadata from a JPEG, PNG or PDF file in memory: GPS, device and lens serials, author, creator software, thumbnails and XMP/IPTC for images; the Info dictionary and XMP for PDF. Pixels and PDF text are kept. Returns JSON with `download_url` (/api/apps/scrubber/download/<token>, no Authorization needed), `filename`, `report` (categories and counts removed, never the values) and `expires_in_secs`. Unsupported, unreadable or encrypted files fail with a message. {DOWNLOAD_NOTE}"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file_base64": {
+                            "type": "string",
+                            "description": "Base64-encoded JPEG, PNG or PDF (decoded size 1 to 26,214,400 bytes). The file type is detected from its content"
+                        },
+                        "filename": {
+                            "type": "string",
+                            "description": "Name for the cleaned file; only the base name is kept (default: scrubbed.<ext>)"
+                        }
+                    },
+                    "required": ["file_base64"]
+                }
+            },
+            {
+                "name": "burn_workspace_now",
+                "title": "Burn Workspace Now",
+                "description": "PERMANENT and IRREVERSIBLE: wipes all sessions, ephemeral downloads, MCP sessions and temporary files from this server, returns a zero-byte audit report, then shuts the server process down. This cannot be undone. Call it only when the user explicitly asks to burn or destroy the workspace; never as cleanup after other tools (their data is already deleted automatically).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "confirm": {
+                            "type": "boolean",
+                            "const": true,
+                            "description": "Must be the boolean true to confirm the permanent, irreversible burn"
+                        }
+                    },
+                    "required": ["confirm"]
+                }
+            },
+            {
+                "name": "pdf_to_markdown",
+                "description": format!(
+                    "Convert a PDF that has a text layer to Markdown in memory: headings (detected by font size), paragraphs, lists, code blocks and bold/italic; repeated headers, footers and page numbers are removed by default. No OCR (scanned PDFs fail with no_text_layer), tables, multi-column layout or images. Limits on this server: {pdf_max_mb:.0} MB ({pdf_max_bytes} bytes) decoded and {pdf_max_pages} pages. Returns JSON with `markdown`, `pages`, `headings`, `warnings` and `truncated`. When the Markdown exceeds 100,000 characters, `markdown` is replaced by a 2,000-character `preview` and a `download_url` (/api/apps/pdf-to-markdown/download/<token>, requires the same Authorization header). {DOWNLOAD_NOTE} Document problems return JSON-RPC error -32000 with data.code (not_a_pdf, corrupt_pdf, encrypted_pdf, no_text_layer, too_many_pages, page_from_out_of_range, output_too_large, timeout, engine_unavailable)."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file_base64": {
+                            "type": "string",
+                            "description": format!("Base64-encoded PDF (decoded size 1 to {pdf_max_bytes} bytes)")
+                        },
+                        "page_from": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "First page to convert, 1-based (default: 1)"
+                        },
+                        "page_to": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Last page to convert, inclusive (default: last page; a value beyond the last page is clamped with a warning). Must be >= page_from"
+                        },
+                        "page_breaks": {
+                            "type": "boolean",
+                            "description": "Insert a --- line between pages (default: false)"
+                        },
+                        "strip_headers_footers": {
+                            "type": "boolean",
+                            "description": "Remove repeated headers, footers and page numbers (default: true)"
+                        }
+                    },
+                    "required": ["file_base64"],
+                    "additionalProperties": false
+                }
+            }
+        ]
+    })
+}
+
 /// JSON-RPC 2.0 message handler for MCP
 pub async fn mcp_message_handler(
     _auth: AuthenticatedSession,
@@ -84,6 +902,7 @@ pub async fn mcp_message_handler(
     }
 
     // 2. Methods
+    let mut burn_delivery: Option<BurnDelivery> = None;
     let rpc_response = match method {
         "initialize" => {
             let result = serde_json::json!({
@@ -93,7 +912,7 @@ pub async fn mcp_message_handler(
                 },
                 "serverInfo": {
                     "name": "disposable-service",
-                    "version": "1.2.0"
+                    "version": env!("CARGO_PKG_VERSION")
                 }
             });
             serde_json::json!({
@@ -110,36 +929,7 @@ pub async fn mcp_message_handler(
             })
         }
         "tools/list" => {
-            let result = serde_json::json!({
-                "tools": [
-                    {
-                        "name": "convert_markdown_to_pdf",
-                        "description": "Convert Markdown text to PDF using Pandoc with LaTeX formatting. Returns a one-time ephemeral download link.",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "markdown": {
-                                    "type": "string",
-                                    "description": "Markdown text to convert to PDF"
-                                },
-                                "filename": {
-                                    "type": "string",
-                                    "description": "Optional output filename for the PDF (default: document.pdf)"
-                                }
-                            },
-                            "required": ["markdown"]
-                        }
-                    },
-                    {
-                        "name": "get_host_metrics",
-                        "description": "Get real-time read-only host telemetry snapshot including CPU cores, RAM, swap, disks, and top processes.",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {}
-                        }
-                    }
-                ]
-            });
+            let result = tools_list_json(&state);
             serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -154,6 +944,18 @@ pub async fn mcp_message_handler(
                 .unwrap_or("");
             let tool_args = call_params.and_then(|p| p.get("arguments"));
 
+            let outcome: ToolOutcome = match tool_name {
+                "redact_secrets" => call_redact_secrets(&state, tool_args).await,
+                "inspect_jwt" => call_inspect_jwt(&state, tool_args).await,
+                "scrub_metadata" => call_scrub_metadata(&state, tool_args).await,
+                "pdf_to_markdown" => call_pdf_to_markdown(&state, tool_args).await,
+                "burn_workspace_now" => {
+                    let (o, d) =
+                        call_burn_workspace_now(&state, tool_args, params.session_id.as_deref()).await;
+                    burn_delivery = d;
+                    o
+                }
+                _ => {
             let (content_items, is_error) = match tool_name {
                 "convert_markdown_to_pdf" => {
                     let markdown = tool_args
@@ -180,7 +982,24 @@ pub async fn mcp_message_handler(
                             format!("{}.pdf", filename.trim_end_matches(".md"))
                         };
 
-                        match crate::routes::pandoc::generate_pandoc_pdf_bytes(markdown, &pdf_filename).await {
+                        let preset_result = match tool_args.and_then(|a| a.get("preset")) {
+                            Some(v) if !v.is_null() => {
+                                serde_json::from_value::<disposable_common::PandocPresetOverrides>(v.clone())
+                                    .map_err(|_| "'preset' must be an object with valid preset fields".to_string())
+                                    .and_then(|o| crate::routes::pandoc_preset::resolve(Some(&o)))
+                            }
+                            _ => crate::routes::pandoc_preset::resolve(None),
+                        };
+                        let gen_result = match preset_result {
+                            Ok(preset) => {
+                                crate::routes::pandoc::generate_pandoc_pdf_with_preset(markdown, &pdf_filename, &preset).await
+                            }
+                            Err(msg) => Err((
+                                axum::http::StatusCode::BAD_REQUEST,
+                                format!("invalid preset: {}", msg),
+                            )),
+                        };
+                        match gen_result {
                             Ok(pdf_bytes) => {
                                 use base64::prelude::BASE64_STANDARD;
                                 use base64::Engine;
@@ -252,17 +1071,40 @@ pub async fn mcp_message_handler(
                     true,
                 ),
             };
+            ToolOutcome::Content(content_items, is_error)
+                }
+            };
 
-            let result = serde_json::json!({
-                "content": content_items,
-                "isError": is_error
-            });
-
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": result
-            })
+            match outcome {
+                ToolOutcome::Content(content_items, is_error) => {
+                    let result = serde_json::json!({
+                        "content": content_items,
+                        "isError": is_error
+                    });
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": result
+                    })
+                }
+                ToolOutcome::RpcError { code, message } => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": code,
+                        "message": message
+                    }
+                }),
+                ToolOutcome::RpcErrorData { code, message, data } => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": code,
+                        "message": message,
+                        "data": data
+                    }
+                }),
+            }
         }
         unknown_method => {
             serde_json::json!({
@@ -275,6 +1117,24 @@ pub async fn mcp_message_handler(
             })
         }
     };
+
+    // Successful burn: the session map was cleared, so deliver through the
+    // sender cloned before the burn, then shut down once delivered.
+    if let Some(delivery) = burn_delivery {
+        if delivery.sender.is_some() {
+            let response_str = serde_json::to_string(&rpc_response).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to serialize JSON-RPC response: {}", e),
+                )
+            })?;
+            let event = Event::default().event("message").data(response_str);
+            delivery.finish(state.clone(), Some(event));
+            return Ok((StatusCode::ACCEPTED, "Accepted").into_response());
+        }
+        delivery.finish(state.clone(), None);
+        return Ok((StatusCode::OK, Json(rpc_response)).into_response());
+    }
 
     // If an active SSE session exists, send the response through SSE event channel
     if let Some(ref sid) = params.session_id {
@@ -692,5 +1552,79 @@ mod tests {
             assert!(items[1]["blob"].is_string());
             assert!(!items[1]["blob"].as_str().unwrap().is_empty());
         }
+    }
+
+    fn burn_test_session() -> SessionInfo {
+        let now = Utc::now().timestamp();
+        SessionInfo {
+            session_id: "auth-burn".to_string(),
+            ip_address: "127.0.0.1".to_string(),
+            user_agent: "TestAgent".to_string(),
+            login_time: now,
+            expires_at: now + 3600,
+            token_type: None,
+            label: None,
+        }
+    }
+
+    async fn call_burn(
+        state: &AppState,
+        sid: Option<&str>,
+        args: serde_json::Value,
+    ) -> Response {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": { "name": "burn_workspace_now", "arguments": args }
+        });
+        mcp_message_handler(
+            AuthenticatedSession(burn_test_session()),
+            State(state.clone()),
+            Query(McpQuery { session_id: sid.map(str::to_string) }),
+            Json(req),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn burn_tool_rejects_missing_or_non_boolean_confirm() {
+        let state = AppState::new();
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({ "confirm": "true" }),
+            serde_json::json!({ "confirm": false }),
+        ] {
+            let res = call_burn(&state, None, args).await;
+            let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(v["error"]["code"], -32602);
+        }
+        assert!(!state.burn.is_burning());
+    }
+
+    #[tokio::test]
+    async fn burn_tool_sse_delivers_full_event_then_ends_stream() {
+        let state = AppState::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        state.add_mcp_session("burn-sid".to_string(), tx).await;
+
+        let res = call_burn(&state, Some("burn-sid"), serde_json::json!({ "confirm": true })).await;
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+
+        let ev = rx.recv().await.expect("result event");
+        let s = format!("{:?}", ev);
+        assert!(s.contains("verified"));
+        // Stream ends after the event.
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(6), rx.recv())
+            .await
+            .expect("stream should end")
+            .is_none());
+        assert!(state.mcp_sessions.read().await.is_empty());
+
+        // A second call reports a burn in progress.
+        let res2 = call_burn(&state, None, serde_json::json!({ "confirm": true })).await;
+        let bytes = axum::body::to_bytes(res2.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"]["message"], "penghancuran sedang berlangsung");
     }
 }

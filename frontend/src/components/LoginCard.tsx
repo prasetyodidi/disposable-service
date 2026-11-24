@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Lock, ArrowRight, ShieldAlert } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
+import { PRIMARY_BUTTON } from '../lib/ui';
 
 export const LoginCard: React.FC = () => {
   const [password, setPassword] = useState('');
@@ -81,7 +82,7 @@ export const LoginCard: React.FC = () => {
 
             <button
               type="submit"
-              className="w-full h-12 bg-rausch hover:bg-rausch-active disabled:bg-rausch-disabled text-white font-semibold rounded-sm flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-xs"
+              className={`w-full ${PRIMARY_BUTTON}`}
               disabled={loading}
             >
               <span>{loading ? 'Authenticating...' : 'Sign In'}</span>

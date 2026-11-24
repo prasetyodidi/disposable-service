@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7a79987387fa13373516139743e1413ef2806d0633000037d18df24f565d12d4 # shrinks to s = Sentence { text: "+1000000000 0.0.0.0", secrets: [Secret { category: Phone, text: "+1000000000" }, Secret { category: Ipv4, text: "0.0.0.0" }] }, active = {Phone}
+cc aa39e7e7570a1aad7ea64493f9aa1f65894703d7adedd5fd142c20d06bcddeaa # shrinks to s = Sentence { text: "+6322346005 1000 0000 0000 9", secrets: [Secret { category: Phone, text: "+6322346005" }, Secret { category: CreditCard, text: "1000 0000 0000 9" }] }, active = {Bearer, ApiKey, Email, Phone, Ipv4, Ipv6}
+cc 10c91400b5d602fa0286f6f20fe578dd9163a4366246967909aee4afd3b7b32c # shrinks to s = Sentence { text: "+6216607656 8892 0218 6766 0 alpha alpha alpha", secrets: [Secret { category: Phone, text: "+6216607656" }, Secret { category: CreditCard, text: "8892 0218 6766 0" }] }, active = {Jwt, ApiKey, CreditCard}
+cc b8d44aba2989fb06f3a7b5b29cb2a21132e1515356e103a3e32acda6a015f98c # shrinks to s = Sentence { text: "eyJ-AAa.aa-0. 88.204.234.232 2000000000000006 alpha alpha", secrets: [Secret { category: Jwt, text: "eyJ-AAa.aa-0." }, Secret { category: Ipv4, text: "88.204.234.232" }, Secret { category: CreditCard, text: "2000000000000006" }] }, active = {Jwt, Bearer, Phone, CreditCard}
+cc 1b66056db8c091ed6315d7f5589451ec4ad1f959940785dad8df712403715945 # shrinks to s = Sentence { text: "Bearer _Z_FS~_Ju/Qs__/Lv_~sJ_i+C+0 1000000000009", secrets: [Secret { category: Bearer, text: "Bearer _Z_FS~_Ju/Qs__/Lv_~sJ_i+C+0" }, Secret { category: CreditCard, text: "1000000000009" }] }, active = {Jwt, ApiKey, Phone, Ipv6}

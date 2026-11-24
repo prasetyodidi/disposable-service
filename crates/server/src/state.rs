@@ -1,10 +1,18 @@
 use chrono::{DateTime, Duration, Utc};
-use disposable_common::SessionInfo;
+use crate::privacy::burn::BurnCoordinator;
+use disposable_common::{AuditReport, SessionInfo};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+/// Root directory for all temporary workspace files (e.g. pandoc jobs).
+/// Burn verification scans this directory.
+pub fn workspace_tmp_root() -> std::path::PathBuf {
+    std::env::temp_dir().join("disposable-workspace")
+}
 
 #[derive(Clone, Debug)]
 pub struct EphemeralDownload {
@@ -21,14 +29,13 @@ pub struct AppState {
     pub jwt_secret: Vec<u8>,
     pub downloads: Arc<RwLock<HashMap<String, EphemeralDownload>>>,
     pub mcp_sessions: Arc<RwLock<HashMap<String, Sender<axum::response::sse::Event>>>>,
+    pub burn: Arc<BurnCoordinator>,
+    pub ui_events: broadcast::Sender<Arc<AuditReport>>,
+    pub pdf: Arc<crate::pdf2md::PdfRuntime>,
 }
 
 impl AppState {
     pub fn new() -> Self {
-        use rand::RngCore;
-        let mut secret = vec![0u8; 64];
-        rand::thread_rng().fill_bytes(&mut secret);
-
         let initial_hash = std::env::var("DISPOSABLE_PASSWORD_HASH")
             .ok()
             .and_then(|h| {
@@ -40,12 +47,57 @@ impl AppState {
                 }
             });
 
+        let jwt_secret: Vec<u8> = if let Ok(s) = std::env::var("JWT_SECRET") {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                trimmed.as_bytes().to_vec()
+            } else {
+                Self::derive_jwt_secret(&initial_hash)
+            }
+        } else {
+            Self::derive_jwt_secret(&initial_hash)
+        };
+
         Self {
             password_hash: Arc::new(RwLock::new(initial_hash)),
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            jwt_secret: secret,
+            jwt_secret,
             downloads: Arc::new(RwLock::new(HashMap::new())),
             mcp_sessions: Arc::new(RwLock::new(HashMap::new())),
+            burn: Arc::new(BurnCoordinator::new()),
+            ui_events: broadcast::channel(4).0,
+            pdf: Arc::new(crate::pdf2md::PdfRuntime::defaults()),
+        }
+    }
+
+    /// Injects the PDF to Markdown runtime (used by startup and tests).
+    pub fn with_pdf(mut self, runtime: crate::pdf2md::PdfRuntime) -> Self {
+        self.pdf = Arc::new(runtime);
+        self
+    }
+
+    fn derive_jwt_secret(initial_hash: &Option<String>) -> Vec<u8> {
+        if let Some(hash) = initial_hash {
+            use sha2::{Digest, Sha256};
+            let mut h1 = Sha256::new();
+            h1.update(b"disposable-service-salt-a:");
+            h1.update(hash.as_bytes());
+            let part1 = h1.finalize();
+
+            let mut h2 = Sha256::new();
+            h2.update(b"disposable-service-salt-b:");
+            h2.update(hash.as_bytes());
+            let part2 = h2.finalize();
+
+            let mut secret = Vec::with_capacity(64);
+            secret.extend_from_slice(&part1);
+            secret.extend_from_slice(&part2);
+            secret
+        } else {
+            use rand::RngCore;
+            let mut secret = vec![0u8; 64];
+            rand::thread_rng().fill_bytes(&mut secret);
+            secret
         }
     }
 
@@ -107,9 +159,7 @@ impl AppState {
         let token = Uuid::new_v4().to_string();
         let expires_at = Utc::now() + Duration::seconds(ttl_secs as i64);
         let mut lock = self.downloads.write().await;
-        // Purge expired downloads
-        let now = Utc::now();
-        lock.retain(|_, d| d.expires_at > now);
+        Self::purge_expired_locked(&mut lock);
         lock.insert(
             token.clone(),
             EphemeralDownload {
@@ -120,6 +170,48 @@ impl AppState {
             },
         );
         token
+    }
+
+    /// Removes expired downloads, zeroing their buffers first.
+    fn purge_expired_locked(lock: &mut HashMap<String, EphemeralDownload>) -> usize {
+        let now = Utc::now();
+        let expired: Vec<String> = lock
+            .iter()
+            .filter(|(_, d)| d.expires_at <= now)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in &expired {
+            if let Some(mut d) = lock.remove(k) {
+                crate::privacy::burn::wipe_buffer(&mut d.data);
+            }
+        }
+        expired.len()
+    }
+
+    /// Purges expired downloads (buffers overwritten with zeros). Returns the count removed.
+    pub async fn purge_expired_downloads(&self) -> usize {
+        let mut lock = self.downloads.write().await;
+        Self::purge_expired_locked(&mut lock)
+    }
+
+    /// Like `take_ephemeral_download`, but the entry is only removed when `pred` accepts it.
+    /// Expired entries are removed (zeroed) and yield `None`.
+    pub async fn take_ephemeral_download_if<F>(&self, token: &str, pred: F) -> Option<EphemeralDownload>
+    where
+        F: FnOnce(&EphemeralDownload) -> bool,
+    {
+        let mut lock = self.downloads.write().await;
+        let entry = lock.get(token)?;
+        if entry.expires_at <= Utc::now() {
+            if let Some(mut d) = lock.remove(token) {
+                crate::privacy::burn::wipe_buffer(&mut d.data);
+            }
+            return None;
+        }
+        if !pred(entry) {
+            return None;
+        }
+        lock.remove(token)
     }
 
     pub async fn take_ephemeral_download(&self, token: &str) -> Option<EphemeralDownload> {
@@ -212,6 +304,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn take_if_keeps_entry_when_predicate_false() {
+        let state = AppState::new();
+        let t = state
+            .store_ephemeral_download(b"# md".to_vec(), "a.md".into(), "text/markdown".into(), 60)
+            .await;
+        assert!(state
+            .take_ephemeral_download_if(&t, |d| d.content_type == "application/pdf")
+            .await
+            .is_none());
+        let d = state
+            .take_ephemeral_download_if(&t, |d| d.content_type == "text/markdown")
+            .await;
+        assert_eq!(d.unwrap().data, b"# md");
+        assert!(state.take_ephemeral_download(&t).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn purge_expired_removes_only_expired() {
+        let state = AppState::new();
+        let live = state
+            .store_ephemeral_download(vec![1], "l.md".into(), "text/markdown".into(), 60)
+            .await;
+        state.downloads.write().await.insert(
+            "old".into(),
+            EphemeralDownload {
+                data: vec![9; 4],
+                filename: "o.md".into(),
+                content_type: "text/markdown".into(),
+                expires_at: Utc::now() - Duration::seconds(1),
+            },
+        );
+        assert_eq!(state.purge_expired_downloads().await, 1);
+        assert!(state.take_ephemeral_download(&live).await.is_some());
+        assert!(state.take_ephemeral_download_if("old", |_| true).await.is_none());
+    }
+
+    #[tokio::test]
     async fn test_mcp_session_lifecycle() {
         let state = AppState::new();
         let session_id = "mcp-test-session-1".to_string();
@@ -246,5 +375,24 @@ mod tests {
         std::env::remove_var("DISPOSABLE_PASSWORD_HASH");
         let fresh_state = AppState::new();
         assert!(!fresh_state.is_claimed().await);
+    }
+
+    #[tokio::test]
+    async fn test_deterministic_jwt_secret() {
+        // Test explicit JWT_SECRET
+        std::env::set_var("JWT_SECRET", "my_custom_lambda_secret_123");
+        let s1 = AppState::new();
+        let s2 = AppState::new();
+        assert_eq!(s1.jwt_secret, b"my_custom_lambda_secret_123");
+        assert_eq!(s1.jwt_secret, s2.jwt_secret);
+        std::env::remove_var("JWT_SECRET");
+
+        // Test hash-derived deterministic secret
+        std::env::set_var("DISPOSABLE_PASSWORD_HASH", "argon2hash_value_xyz");
+        let d1 = AppState::new();
+        let d2 = AppState::new();
+        assert_eq!(d1.jwt_secret.len(), 64);
+        assert_eq!(d1.jwt_secret, d2.jwt_secret);
+        std::env::remove_var("DISPOSABLE_PASSWORD_HASH");
     }
 }
