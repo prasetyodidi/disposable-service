@@ -59,7 +59,7 @@ describe('MetadataScrubber', () => {
   it('shows the report and triggers a download on success (Req 4.5)', async () => {
     const header = b64url({ file_kind: 'jpeg', removed: [{ category: 'gps', count: 3 }] });
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(new Blob(['clean']), {
+      new Response('clean', {
         status: 200,
         headers: {
           'content-disposition': 'attachment; filename="clean.jpg"',
